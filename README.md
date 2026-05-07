@@ -24,25 +24,25 @@
 ## 目录结构
 
 LangAgent-Terminal/
-├── index.html           # 前端界面与交互逻辑
-├── server.py            # Python 后端服务器
-├── 启动控制台.bat         # Windows 一键启动脚本
-├── Data/                # 运行时自动生成的数据目录
-│   ├── 记忆核心/
-│   │   ├── chat_history.json       # 短期对话记录
-│   │   ├── memory_summary.json     # 长期记忆摘要
-│   │   └── daily_signature.json   # 每日签名缓存
-│   ├── 人物档案/
-│   │   └── 人物档案.txt           # Agent 人设
-│   ├── 用户档案/
-│   │   └── 用户档案.txt           # 用户基础信息
-│   ├── 人物内心/
-│   │   └── 人物内心.txt           # AI 自动提炼的用户画像
-│   ├── 模型配置/
-│   │   └── config.json            # 连接信息、名称、主动设置
-│   ├── 人物头像/                 # Agent 头像 (avatar.png)
-│   └── 用户头像/                 # 用户头像 (avatar.png)
-└── README.md            # 本文件
+    - index.html                # 前端界面与交互逻辑
+    - server.py                 # Python 后端服务器
+    - 启动控制台.bat              # Windows 一键启动脚本
+    - Data/
+        - 记忆核心/
+            - chat_history.json      # 短期对话记录
+            - memory_summary.json    # 长期记忆摘要
+            - daily_signature.json   # 每日签名缓存
+        - 人物档案/
+            - 人物档案.txt           # Agent 人设
+        - 用户档案/
+            - 用户档案.txt           # 用户基础信息
+        - 人物内心/
+            - 人物内心.txt           # AI 自动提炼的用户画像
+        - 模型配置/
+            - config.json           # 连接信息、名称、主动设置
+        - 人物头像/                 # Agent 头像 (avatar.png)
+        - 用户头像/                 # 用户头像 (avatar.png)
+    - README.md                 # 本文件
 
 ## 快速开始
 
