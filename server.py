@@ -36,7 +36,6 @@ consecutive_failures = 0
 last_interaction_time = time.time()
 next_proactive_delay = random.uniform(120, 240) * 60
 model_status_cache = {"is_online": False, "last_check": 0}
-pending_proactive_queue = []
 
 def update_interaction_time(cfg):
     global last_interaction_time, next_proactive_delay
@@ -216,11 +215,8 @@ def proactive_worker():
                         history = safe_json_read(history_file, [])
                         for p in parts: history.append({"role": "agent", "content": p, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
                         atomic_json_write(history_file, history)
-                    # 同时推入待发队列，供 OpenClaw 心跳搭车投递到微信
-                    with global_state_lock:
-                        pending_proactive_queue.append(''.join(parts))
                     update_interaction_time(cfg)
-                    print(f"[{time.strftime('%H:%M:%S')}] 💌 [主动关怀] 消息已推入时间流 + 待发队列")
+                    print(f"[{time.strftime('%H:%M:%S')}] 💌 [主动关怀] 消息已推入时间流")
         except Exception: pass
 
 threading.Thread(target=proactive_worker, daemon=True).start()
@@ -470,13 +466,7 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
                             break 
 
                 if not user_message and not image_data:
-                    with global_state_lock:
-                        proactive_text = pending_proactive_queue.pop(0) if pending_proactive_queue else None
-                    if proactive_text:
-                        print(f"[{time.strftime('%H:%M:%S')}] 💌 [主动关怀] 搭车OpenClaw心跳投递到微信: {proactive_text}")
-                        self._send_openai_response(proactive_text, is_stream, cfg.get('model', ''))
-                    else:
-                        self._send_openai_response("HEARTBEAT_OK", is_stream, cfg.get('model', ''))
+                    self._send_openai_response("HEARTBEAT_OK", is_stream, cfg.get('model', ''))
                     return
 
                 print(f"\n[{time.strftime('%H:%M:%S')}] 📥 [接收消息] {user_name}: {user_message}")

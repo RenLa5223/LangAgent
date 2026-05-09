@@ -60,7 +60,7 @@
         .msg-time { font-size: 0.7rem; color: rgba(0,0,0,0.3); position: absolute; bottom: -18px; white-space: nowrap; }
         .agent .msg-time { left: 5px; } .user .msg-time { right: 5px; }
         .agent .bubble { background: white; border-top-left-radius: 4px; color: var(--text-main); }
-        .user .bubble { background: linear-gradient(135deg, var(--border-color) 0%, #d4a373 100%); color: white; border-top-right-radius: 4px; }
+        .user .bubble { background: linear-gradient(135deg, var(--border-color) 0%, var(--primary-color) 100%); color: white; border-top-right-radius: 4px; }
         
         .chat-footer { padding: 15px 20px; background: rgba(255,255,255,0.5); border-top: 1px solid rgba(232, 213, 196, 0.5); display: flex; gap: 10px; align-items: flex-end; }
         .input-wrapper { flex: 1; background: #fff; border-radius: 20px; box-shadow: var(--shadow-inset); padding: 10px 15px; display: flex; flex-direction: column; gap: 8px; }
@@ -368,7 +368,7 @@
                         
                         <div id="avatar-manage-area" style="display: none; align-items: center; gap: 15px; font-size: 1rem; font-weight: normal;">
                             <img id="manage-avatar-img" src="" style="width: 44px; height: 44px; border-radius: 12px; object-fit: cover; border: 2px solid var(--border-color); box-shadow: var(--shadow-soft);">
-                            <button class="icon-btn" style="background: #d4a373; color: white; padding: 6px 14px; font-size: 0.9rem;" onclick="document.getElementById('manage-avatar-upload').click()">上传头像</button>
+                            <button class="icon-btn" style="background: var(--primary-color); color: white; padding: 6px 14px; font-size: 0.9rem;" onclick="document.getElementById('manage-avatar-upload').click()">上传头像</button>
                             <input type="file" id="manage-avatar-upload" style="display: none;" accept="image/*" onchange="handleManageAvatarSelect(event)">
                         </div>
                     </h1>
@@ -386,7 +386,7 @@
                         <div style="height: 1px; background: rgba(232,213,196,0.5); margin: 15px 0;"></div>
                         <div class="input-group">
                             <label style="display: flex; align-items: center; gap: 10px; font-size: 1.1rem; color: var(--primary-dark);">
-                                <input type="checkbox" id="set-proactive-enable" onchange="toggleProactive(); setDirty()" style="width: 18px; height: 18px;">
+                                <input type="checkbox" id="set-proactive-enable" onchange="toggleProactive(true); setDirty()" style="width: 18px; height: 18px;">
                                 开启主动消息破冰
                             </label>
                         </div>
@@ -505,13 +505,28 @@
             if (isDirty) return "您有未保存的修改，确定要离开吗？";
         };
 
-        function toggleProactive() {
+        function toggleProactive(userAction) {
             const isChecked = document.getElementById('set-proactive-enable').checked;
+
+            if (isChecked && userAction) {
+                const lobsterToggle = document.getElementById('lobster-toggle');
+                if (lobsterToggle.checked) {
+                    if (!confirm('⚠️ 开启主动破冰将自动关闭龙虾接口。\n\n主动消息无法通过OpenClaw投递到微信，两者不可同时启用。\n\n确定继续吗？')) {
+                        document.getElementById('set-proactive-enable').checked = false;
+                        return;
+                    }
+                    lobsterToggle.checked = false;
+                    document.getElementById('lobster-toggle-text').innerText = '接管已暂停 (由您手动回复)';
+                    document.getElementById('lobster-toggle-text').style.color = '#e07a5f';
+                    showToast('已自动关闭龙虾接口');
+                }
+            }
+
             const timeGrp = document.getElementById('proactive-time-group');
             const intGrp = document.getElementById('proactive-interval-group');
             timeGrp.style.opacity = isChecked ? '1' : '0.5';
             intGrp.style.opacity = isChecked ? '1' : '0.5';
-            
+
             document.getElementById('set-proactive-start-h').disabled = !isChecked;
             document.getElementById('set-proactive-start-m').disabled = !isChecked;
             document.getElementById('set-proactive-end-h').disabled = !isChecked;
@@ -930,7 +945,7 @@
             avatarImg.dataset.role = role;
             avatarImg.src = (role === 'agent' ? '/api/avatar/agent' : '/api/avatar/user') + '?v=' + avatarCacheBuster;
             
-            avatarImg.onerror = () => { avatar.innerHTML = role === 'agent' ? GLOBAL_AI_NAME[0] : GLOBAL_USER_NAME[0]; avatar.style.color = role === 'agent' ? 'var(--primary-color)' : '#bc8a5f'; };
+            avatarImg.onerror = () => { avatar.innerHTML = role === 'agent' ? GLOBAL_AI_NAME[0] : GLOBAL_USER_NAME[0]; avatar.style.color = role === 'agent' ? 'var(--primary-color)' : 'var(--primary-dark)'; };
             avatar.appendChild(avatarImg);
 
             const bubble = document.createElement('div'); bubble.className = 'bubble';
@@ -960,18 +975,33 @@
 
         async function toggleLobsterState(el) {
             const isEnabled = el.checked;
+
+            if (isEnabled) {
+                const proactiveCheck = document.getElementById('set-proactive-enable');
+                if (proactiveCheck && proactiveCheck.checked) {
+                    if (!confirm('⚠️ 开启龙虾接口将自动关闭主动破冰功能。\n\n主动消息无法通过OpenClaw投递到微信，两者不可同时启用。\n\n确定继续吗？')) {
+                        el.checked = false;
+                        return;
+                    }
+                    proactiveCheck.checked = false;
+                    toggleProactive(false);
+                    showToast('已自动关闭主动破冰');
+                }
+            }
+
             const text = document.getElementById('lobster-toggle-text');
             text.innerText = isEnabled ? "接管已开启 (Agent 正在工作)" : "接管已暂停 (由您手动回复)";
             text.style.color = isEnabled ? "#52b788" : "#e07a5f";
-            
+
             try {
                 const res = await fetch(`/api/read/${encodeURIComponent('模型配置')}/config.json`);
                 let cfg = await res.json();
                 cfg.lobster_enabled = isEnabled;
+                if (isEnabled) cfg.proactive_enabled = false;
                 await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: '模型配置', filename: 'config.json', content: JSON.stringify(cfg, null, 2) }) });
                 showToast(isEnabled ? 'Agent 已接管消息回复' : 'Agent 已暂停回复，进入休眠');
-            } catch(e) { 
-                showToast('开关状态保存失败，请检查网络'); 
+            } catch(e) {
+                showToast('开关状态保存失败，请检查网络');
             }
         }
 
@@ -1071,7 +1101,7 @@
                     document.getElementById('set-proactive-min').value = cfg.proactive_min || 120;
                     document.getElementById('set-proactive-max').value = cfg.proactive_max || 240;
                     onProactiveSliderChange();
-                    toggleProactive();
+                    toggleProactive(false);
                     pendingTheme = cfg.theme || 'default';
                     applyTheme(pendingTheme);
                 } catch(e) {}
@@ -1084,7 +1114,7 @@
             if(currentJsonData.length === 0) { ui.innerHTML = '<p style="color:#a59385; text-align:center;">暂无上下文</p>'; updateTokenDisplay(); return; }
             currentJsonData.forEach((msg, index) => {
                 const roleName = msg.role === 'agent' ? `${GLOBAL_AI_NAME}` : `${GLOBAL_USER_NAME}`;
-                const color = msg.role === 'agent' ? '#d4a373' : '#bc8a5f';
+                const color = msg.role === 'agent' ? 'var(--primary-color)' : 'var(--primary-dark)';
                 const card = document.createElement('div'); card.className = 'memory-card';
                 card.innerHTML = `<div class="memory-meta"><span style="color:${color}">${roleName}</span><span>${msg.time || ''}</span></div>
                     <textarea class="memory-text" oninput="setDirty()" onchange="updateJsonData(${index}, 'content', this.value)">${msg.content}</textarea>
@@ -1094,16 +1124,48 @@
             updateTokenDisplay();
         }
 
+        function getMemoryDecayScore(item) {
+            const imp = Math.max(1, Math.min(10, parseFloat(item.importance) || 5));
+            const t = item.time || item.timestamp || '';
+            if (!t) return imp;
+            try {
+                const dt = new Date(t.replace(' ', 'T'));
+                if (isNaN(dt.getTime())) return imp;
+                const hours = (Date.now() - dt.getTime()) / 3600000;
+                const halfLife = 24 * Math.pow(2, (imp - 1) / 2);
+                return Math.round(imp * Math.pow(2, -hours / halfLife) * 100) / 100;
+            } catch(e) { return imp; }
+        }
+
+        function getMemoryState(score) {
+            if (score >= 7) return { label: '鲜明', color: '#52b788' };
+            if (score >= 4) return { label: '模糊', color: '#d4a373' };
+            return { label: '淡去', color: '#e07a5f' };
+        }
+
         function renderLongMemory() {
             const ui = document.getElementById('json-editor-ui'); ui.innerHTML = '';
             const items = currentJsonData.items || [];
             document.getElementById('module-title').innerText = `记忆管理 (${items.length}条核心记忆)`;
             if(items.length === 0) { ui.innerHTML = '<p style="color:#a59385; text-align:center;">大模型还在观察中，暂未生成记忆摘要...</p>'; updateTokenDisplay(); return; }
             items.forEach((mem, index) => {
-                const card = document.createElement('div'); card.className = 'memory-card'; card.style.borderLeftColor = '#e07a5f'; 
-                card.innerHTML = `<div class="memory-meta"><span>归档: ${mem.time || ''}</span><span style="color:#e07a5f;">重要度: ${mem.importance}/10</span></div>
-                    <textarea class="memory-text" oninput="setDirty()" onchange="updateJsonData(${index}, 'content', this.value)">${mem.content}</textarea>
-                    <button class="mem-del-btn" onclick="deleteJsonItem(${index})">抹除</button>`;
+                const score = getMemoryDecayScore(mem);
+                const state = getMemoryState(score);
+                const card = document.createElement('div'); card.className = 'memory-card';
+                card.style.borderLeftColor = state.color;
+                card.innerHTML = `<div class="memory-meta">
+                    <span>归档: ${mem.time || ''}</span>
+                    <span style="display:flex;align-items:center;gap:6px;">
+                        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${state.color};flex-shrink:0;"></span>
+                        <span style="color:${state.color};font-weight:bold;">${state.label}</span>
+                        <span style="font-size:0.75rem;color:var(--text-sub);">鲜活度 ${score}</span>
+                    </span>
+                </div>
+                <div style="height:3px;border-radius:2px;background:rgba(0,0,0,0.05);overflow:hidden;">
+                    <div style="height:100%;width:${Math.min(100, Math.round(score/10*100))}%;background:${state.color};border-radius:2px;transition:width 0.5s;"></div>
+                </div>
+                <textarea class="memory-text" oninput="setDirty()" onchange="updateJsonData(${index}, 'content', this.value)">${mem.content}</textarea>
+                <button class="mem-del-btn" onclick="deleteJsonItem(${index})">抹除</button>`;
                 ui.appendChild(card);
             });
             updateTokenDisplay();
@@ -1133,6 +1195,7 @@
                 cfg.proactive_end = getProactiveTime('end');
                 cfg.proactive_min = parseInt(document.getElementById('set-proactive-min').value) || 120;
                 cfg.proactive_max = parseInt(document.getElementById('set-proactive-max').value) || 240;
+                cfg.lobster_enabled = document.getElementById('lobster-toggle').checked;
                 cfg.theme = pendingTheme;
 
                 try {
