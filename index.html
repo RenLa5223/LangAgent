@@ -5,8 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Agent 沉浸式终端</title>
     <style>
-        :root { --primary-color: #d4a373; --primary-light: #e8d5c4; --primary-dark: #bc8a5f; --bg-color: #fdfaf7; --card-bg: rgba(255, 255, 255, 0.85); --text-main: #5a4a42; --text-sub: #8d7765; --shadow-soft: 8px 8px 24px rgba(212, 163, 115, 0.15), -8px -8px 24px rgba(255, 255, 255, 0.8); --shadow-inset: inset 4px 4px 10px rgba(212, 163, 115, 0.1), inset -4px -4px 10px rgba(255, 255, 255, 0.9); }
-        body { font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; background: linear-gradient(135deg, #fdfaf7 0%, #faedcd 100%); margin: 0; display: flex; align-items: center; justify-content: center; height: 100vh; color: var(--text-main); overflow: hidden; }
+        :root, [data-theme="default"] { --primary-color: #d4a373; --primary-light: #e8d5c4; --primary-dark: #bc8a5f; --bg-color: #fdfaf7; --bg-gradient-end: #faedcd; --card-bg: rgba(255, 255, 255, 0.85); --text-main: #5a4a42; --text-sub: #8d7765; --border-color: #e8d5c4; --shadow-soft: 8px 8px 24px rgba(212, 163, 115, 0.15), -8px -8px 24px rgba(255,255,255,0.8); --shadow-inset: inset 4px 4px 10px rgba(212, 163, 115, 0.1), inset -4px -4px 10px rgba(255,255,255,0.9); }
+        [data-theme="mint"] { --primary-color: #6ba292; --primary-light: #c5e0d5; --primary-dark: #4a7c6b; --bg-color: #f4f9f6; --bg-gradient-end: #e2f0e8; --card-bg: rgba(255, 255, 255, 0.85); --text-main: #3d4a44; --text-sub: #6d8076; --border-color: #c5e0d5; --shadow-soft: 8px 8px 24px rgba(107, 162, 146, 0.12), -8px -8px 24px rgba(255,255,255,0.8); --shadow-inset: inset 4px 4px 10px rgba(107, 162, 146, 0.08), inset -4px -4px 10px rgba(255,255,255,0.9); }
+        [data-theme="sakura"] { --primary-color: #c97d8b; --primary-light: #f0d0d6; --primary-dark: #a85d6b; --bg-color: #fdf7f8; --bg-gradient-end: #fae8ec; --card-bg: rgba(255, 255, 255, 0.85); --text-main: #5a3d44; --text-sub: #8d7078; --border-color: #f0d0d6; --shadow-soft: 8px 8px 24px rgba(201, 125, 139, 0.12), -8px -8px 24px rgba(255,255,255,0.8); --shadow-inset: inset 4px 4px 10px rgba(201, 125, 139, 0.08), inset -4px -4px 10px rgba(255,255,255,0.9); }
+        body { font-family: 'PingFang SC', 'Microsoft YaHei', sans-serif; background: linear-gradient(135deg, var(--bg-color) 0%, var(--bg-gradient-end) 100%); margin: 0; display: flex; align-items: center; justify-content: center; height: 100vh; color: var(--text-main); overflow: hidden; }
         
         #wizard-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: var(--bg-color); display: flex; align-items: center; justify-content: center; z-index: 9999; }
         .wizard-card { background: var(--card-bg); backdrop-filter: blur(20px); width: 420px; padding: 50px 40px; border-radius: 30px; box-shadow: 0 20px 60px rgba(141, 119, 101, 0.15); border: 1px solid rgba(255,255,255,0.6); display: none; flex-direction: column; align-items: center; animation: slideUp 0.5s ease; text-align: center; max-width: 90vw; box-sizing: border-box;}
@@ -41,7 +43,7 @@
         .agent-name { font-size: 1.3rem; font-weight: bold; color: var(--primary-dark); letter-spacing: 2px; }
         .agent-signature { font-size: 0.85rem; color: #a59385; margin-top: 4px; background: rgba(232, 213, 196, 0.3); padding: 2px 12px; border-radius: 10px; }
         
-        .head-status-box { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; background: rgba(255,255,255,0.7); padding: 6px 12px; border-radius: 15px; border: 1px solid #e8d5c4; box-shadow: var(--shadow-inset);}
+        .head-status-box { display: flex; align-items: center; gap: 6px; font-size: 0.85rem; background: rgba(255,255,255,0.7); padding: 6px 12px; border-radius: 15px; border: 1px solid var(--border-color); box-shadow: var(--shadow-inset);}
         .head-conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; flex-shrink: 0;}
         .head-conn-dot.green { background: #52b788; box-shadow: 0 0 5px rgba(82, 183, 136, 0.6); }
         .head-conn-dot.red { background: #e07a5f; }
@@ -58,7 +60,7 @@
         .msg-time { font-size: 0.7rem; color: rgba(0,0,0,0.3); position: absolute; bottom: -18px; white-space: nowrap; }
         .agent .msg-time { left: 5px; } .user .msg-time { right: 5px; }
         .agent .bubble { background: white; border-top-left-radius: 4px; color: var(--text-main); }
-        .user .bubble { background: linear-gradient(135deg, #e8d5c4 0%, #d4a373 100%); color: white; border-top-right-radius: 4px; }
+        .user .bubble { background: linear-gradient(135deg, var(--border-color) 0%, #d4a373 100%); color: white; border-top-right-radius: 4px; }
         
         .chat-footer { padding: 15px 20px; background: rgba(255,255,255,0.5); border-top: 1px solid rgba(232, 213, 196, 0.5); display: flex; gap: 10px; align-items: flex-end; }
         .input-wrapper { flex: 1; background: #fff; border-radius: 20px; box-shadow: var(--shadow-inset); padding: 10px 15px; display: flex; flex-direction: column; gap: 8px; }
@@ -68,6 +70,51 @@
         .chat-input-textarea { width: 100%; border: none; outline: none; resize: none; background: transparent; font-family: inherit; font-size: 1rem; color: var(--text-main); line-height: 1.5; max-height: 120px; height: 24px; overflow-y: auto; }
         .action-btn { width: 44px; height: 44px; border-radius: 50%; border: none; background: var(--bg-color); box-shadow: var(--shadow-soft); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; color: var(--primary-color); transition: 0.3s; flex-shrink: 0; }
         .send-btn { background: var(--primary-color); color: white; }
+
+        /* 深度按钮：模型配置 & 档案室 */
+        .header-left .icon-btn,
+        .header-right .icon-btn {
+            background: rgba(255,255,255,0.7);
+            border: 1px solid var(--border-color);
+            box-shadow: 4px 4px 10px rgba(188, 138, 95, 0.08),
+                        -4px -4px 10px rgba(255, 255, 255, 0.6);
+            transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1.15);
+            color: var(--text-sub);
+        }
+        .header-left .icon-btn:hover,
+        .header-right .icon-btn:hover {
+            box-shadow: 6px 6px 16px rgba(188, 138, 95, 0.12),
+                        -6px -6px 16px rgba(255, 255, 255, 0.8);
+            transform: translateY(-3px);
+            color: var(--primary-dark);
+        }
+        .header-left .icon-btn:active,
+        .header-right .icon-btn:active {
+            box-shadow: inset 2px 2px 6px rgba(188, 138, 95, 0.08),
+                        inset -2px -2px 6px rgba(255, 255, 255, 0.6);
+            transform: translateY(1px);
+        }
+
+        /* 深度按钮：发送图片 */
+        .chat-footer .action-btn:not(.send-btn) {
+            background: rgba(255,255,255,0.7);
+            border: 1px solid var(--border-color);
+            box-shadow: 4px 4px 10px rgba(188, 138, 95, 0.08),
+                        -4px -4px 10px rgba(255, 255, 255, 0.6);
+            transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1.15);
+            color: var(--primary-color);
+        }
+        .chat-footer .action-btn:not(.send-btn):hover {
+            box-shadow: 6px 6px 16px rgba(188, 138, 95, 0.12),
+                        -6px -6px 16px rgba(255, 255, 255, 0.8);
+            transform: translateY(-3px);
+            color: var(--primary-dark);
+        }
+        .chat-footer .action-btn:not(.send-btn):active {
+            box-shadow: inset 2px 2px 6px rgba(188, 138, 95, 0.08),
+                        inset -2px -2px 6px rgba(255, 255, 255, 0.6);
+            transform: translateY(1px);
+        }
 
         #sidebar { width: 260px; background: rgba(255, 241, 230, 0.4); border-right: 1px solid rgba(232, 213, 196, 0.5); display: flex; flex-direction: column; padding: 20px 15px; box-sizing: border-box; }
         .nav-item { padding: 12px 15px; margin: 5px 0; cursor: pointer; border-radius: 12px; transition: 0.3s; color: var(--text-sub); font-size: 0.95rem; }
@@ -98,11 +145,11 @@
         .input-group label { display: flex; justify-content: space-between; font-size: 0.85rem; color: var(--text-sub); margin-bottom: 6px; font-weight: bold; }
         .modal-input, .modal-select { width: 100%; padding: 10px 15px; border-radius: 10px; border: none; background: #fff; box-shadow: var(--shadow-inset); font-size: 0.95rem; color: var(--text-main); outline: none; box-sizing: border-box; }
         .test-row { display: flex; gap: 8px; align-items: center; margin-bottom: 5px; }
-        .test-btn { background: #e8d5c4; color: var(--text-main); border: none; padding: 8px 12px; border-radius: 10px; cursor: pointer; font-size: 0.85rem; font-weight: bold; white-space: nowrap; }
+        .test-btn { background: var(--border-color); color: var(--text-main); border: none; padding: 8px 12px; border-radius: 10px; cursor: pointer; font-size: 0.85rem; font-weight: bold; white-space: nowrap; }
         .conn-status { font-size: 0.8rem; display: flex; align-items: center; gap: 5px; }
         .modal-actions { display: flex; gap: 10px; margin-top: 25px; }
         .modal-btn { flex: 1; padding: 12px; border-radius: 12px; border: none; cursor: pointer; font-size: 1rem; font-weight: bold; }
-        .btn-cancel { background: #e8d5c4; color: var(--text-sub); }
+        .btn-cancel { background: var(--border-color); color: var(--text-sub); }
         .btn-save { background: var(--primary-color); color: white; }
         
         #toast-container { position: fixed; top: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px; }
@@ -119,7 +166,68 @@
             animation: ellipsis 1.5s infinite;
         }
 
-        /* 📱 响应式移动端适配 📱 */
+        /* ===== 🦞 龙虾(OpenClaw)专属区域 开始 🦞 ===== */
+        #lobster-panel { display: none; flex-direction: column; gap: 15px; flex: 1; }
+        .lobster-info { background: #fff; padding: 20px; border-radius: 15px; box-shadow: var(--shadow-soft); font-size: 0.95rem; line-height: 1.6; color: var(--text-main); }
+        .lobster-btn { background: #52b788; color: white; border: none; padding: 12px 20px; border-radius: 12px; font-size: 1rem; font-weight: bold; cursor: pointer; box-shadow: var(--shadow-soft); transition: 0.3s; align-self: flex-start; margin-top: 10px; display: flex; align-items: center; gap: 5px;}
+        .lobster-btn:hover { background: #40916c; transform: translateY(-2px); }
+        .switch { position: relative; display: inline-block; width: 50px; height: 28px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; transition: .4s; border-radius: 34px; }
+        .slider:before { position: absolute; content: ""; height: 20px; width: 20px; left: 4px; bottom: 4px; background-color: white; transition: .4s; border-radius: 50%; box-shadow: 0 2px 5px rgba(0,0,0,0.2);}
+        input:checked + .slider { background-color: #52b788; }
+        input:checked + .slider:before { transform: translateX(22px); }
+        /* ===== 🦞 龙虾(OpenClaw)专属区域 结束 🦞 ===== */
+
+        /* 滑块样式 */
+        .range-slider {
+            -webkit-appearance: none; appearance: none;
+            width: 100%; height: 8px;
+            border-radius: 4px;
+            background: linear-gradient(90deg, var(--border-color) 0%, var(--primary-color) 100%);
+            box-shadow: inset 2px 2px 4px rgba(188, 138, 95, 0.15), inset -2px -2px 4px rgba(255,255,255,0.7);
+            outline: none; cursor: pointer;
+        }
+        .range-slider::-webkit-slider-thumb {
+            -webkit-appearance: none; appearance: none;
+            width: 26px; height: 26px;
+            border-radius: 50%;
+            background: #fff;
+            border: 2px solid var(--primary-light);
+            box-shadow: 3px 3px 8px rgba(188, 138, 95, 0.18), -3px -3px 8px rgba(255,255,255,0.9);
+            cursor: grab; transition: box-shadow 0.2s;
+        }
+        .range-slider::-webkit-slider-thumb:active { cursor: grabbing; box-shadow: 1px 1px 4px rgba(188, 138, 95, 0.2), -1px -1px 4px rgba(255,255,255,0.7); }
+        .range-slider:disabled { opacity: 0.35; cursor: not-allowed; }
+        .range-slider:disabled::-webkit-slider-thumb { cursor: not-allowed; }
+
+        .slider-val {
+            display: inline-block; min-width: 52px; text-align: right;
+            font-weight: bold; color: var(--primary-dark); font-size: 0.95rem;
+            background: rgba(255,255,255,0.6); padding: 3px 10px; border-radius: 10px;
+            box-shadow: var(--shadow-inset);
+        }
+
+        .time-select {
+            appearance: none; -webkit-appearance: none;
+            padding: 8px 12px; border-radius: 12px;
+            border: 1px solid var(--border-color);
+            background: #fff; box-shadow: var(--shadow-inset);
+            font-family: inherit; font-size: 1rem; color: var(--text-main);
+            cursor: pointer; text-align: center; outline: none;
+            min-width: 56px;
+        }
+        .time-select:disabled { opacity: 0.35; cursor: not-allowed; }
+        .time-select:focus { box-shadow: 0 0 0 2px var(--primary-light), var(--shadow-inset); }
+
+        .theme-row { display: flex; gap: 10px; justify-content: center; padding: 6px 0; flex-wrap: wrap; }
+        .theme-swatch { display: flex; flex-direction: column; align-items: center; gap: 5px; cursor: pointer; padding: 6px 8px; border-radius: 12px; transition: all 0.25s; }
+        .theme-swatch:hover { background: rgba(0,0,0,0.03); }
+        .theme-swatch .swatch-dot { width: 34px; height: 34px; border-radius: 50%; border: 3px solid transparent; box-shadow: var(--shadow-soft); transition: all 0.25s; }
+        .theme-swatch.active .swatch-dot { border-color: var(--primary-color); box-shadow: 0 0 0 3px var(--primary-light); }
+        .theme-swatch span { font-size: 0.72rem; color: var(--text-sub); font-weight: bold; }
+        .theme-swatch.active span { color: var(--primary-dark); }
+
         @media (max-width: 768px) {
             #app-container { width: 100vw; height: 100vh; border-radius: 0; border: none; }
             .chat-header { padding: 0 10px; }
@@ -160,7 +268,6 @@
         </div>
     </div>
 
-    <!-- 🌟 重置确认模态框 🌟 -->
     <div id="reset-modal">
         <div class="modal-box" style="text-align: center;">
             <h3 style="color: #e07a5f; margin-bottom: 10px;">⚠️ 危险操作：系统重置</h3>
@@ -177,7 +284,6 @@
         </div>
     </div>
 
-    <!-- 模型配置剥离了全局名称设置 -->
     <div id="model-modal">
         <div class="modal-box">
             <h3>⚙️ 大脑接入中枢</h3>
@@ -212,7 +318,6 @@
             <div class="chat-header">
                 <div class="header-left">
                     <button class="icon-btn" onclick="toggleModal(true)">⚙️ <span>模型配置</span></button>
-                    <!-- 🌟 正在输入动画占位 🌟 -->
                     <span id="header-typing-indicator" style="display:none; font-size: 0.85rem; color: var(--primary-dark); font-weight: bold; margin-left: 10px; background: rgba(255,255,255,0.7); padding: 5px 12px; border-radius: 15px; box-shadow: var(--shadow-inset);">正在输入中<span class="typing-dots"></span></span>
                 </div>
                 <div class="header-center">
@@ -237,20 +342,19 @@
 
         <div id="manage-view" class="view">
             <div id="sidebar">
-                <h2 style="color: var(--text-sub); text-align: center; border-bottom: 2px solid #e8d5c4; padding-bottom: 10px; margin-top:0; font-size:1.2rem;">控制终端</h2>
+                <h2 style="color: var(--text-sub); text-align: center; border-bottom: 2px solid var(--border-color); padding-bottom: 10px; margin-top:0; font-size:1.2rem;">控制终端</h2>
                 
                 <div class="nav-item active" onclick="loadModule('人物档案', 'txt', this)">人物档案</div>
                 <div class="nav-item" onclick="loadModule('用户档案', 'txt', this)">用户档案</div>
                 <div class="sidebar-divider"></div>
                 <div class="nav-item" onclick="loadModule('人物内心', 'txt', this)">人物内心</div>
-                
+
                 <div class="sidebar-bottom">
                     <div class="sidebar-divider"></div>
                     <div class="nav-item" style="color: #e07a5f; font-weight: bold; text-align: center;" onclick="showResetModal()">重置系统</div>
                     <div class="sidebar-divider"></div>
-
+                    <button class="icon-btn" style="background: #fffcf9;" onclick="loadModule('龙虾接口', 'lobster', this)">🦞 <span>龙虾接口</span></button>
                     <button class="icon-btn" style="background: #fffcf9;" onclick="loadModule('临时记忆', 'json_temp', this)">🔄 <span>临时记忆</span></button>
-                    <!-- 🌟 交换后的位置：记忆管理在上，功能设置在下 🌟 -->
                     <button class="icon-btn" style="background: #fffcf9;" onclick="loadModule('记忆管理', 'json_long', this)">🧠 <span>记忆管理</span></button>
                     <button class="icon-btn" style="background: #fffcf9;" onclick="loadModule('功能设置', 'config', this)">⚙️ <span>功能设置</span></button>
                     <button class="icon-btn" style="margin-top: auto;" onclick="switchView('chat')">💬 <span>返回聊天</span></button>
@@ -260,9 +364,10 @@
                 <div class="manage-card">
                     <h1 id="module-title-container" style="display: flex; justify-content: space-between; align-items: center;">
                         <span id="module-title">模块名称</span>
+                        <span id="token-badge" style="font-size:0.75rem;color:var(--text-sub);background:rgba(255,255,255,0.5);padding:3px 10px;border-radius:10px;box-shadow:var(--shadow-inset);white-space:nowrap;display:none;"></span>
                         
                         <div id="avatar-manage-area" style="display: none; align-items: center; gap: 15px; font-size: 1rem; font-weight: normal;">
-                            <img id="manage-avatar-img" src="" style="width: 44px; height: 44px; border-radius: 12px; object-fit: cover; border: 2px solid #e8d5c4; box-shadow: var(--shadow-soft);">
+                            <img id="manage-avatar-img" src="" style="width: 44px; height: 44px; border-radius: 12px; object-fit: cover; border: 2px solid var(--border-color); box-shadow: var(--shadow-soft);">
                             <button class="icon-btn" style="background: #d4a373; color: white; padding: 6px 14px; font-size: 0.9rem;" onclick="document.getElementById('manage-avatar-upload').click()">上传头像</button>
                             <input type="file" id="manage-avatar-upload" style="display: none;" accept="image/*" onchange="handleManageAvatarSelect(event)">
                         </div>
@@ -272,17 +377,9 @@
                         💡 <b>自动化区域：</b>AI 会自动记录并提取用户的最新情报，结合旧情报在这里生成并迭代最完整的规范化【用户画像】。
                     </div>
 
-                    <div id="memory-settings" style="display:none; margin-bottom: 15px; text-align: right;">
-                        <label style="font-size:0.9rem; color:var(--text-sub); font-weight:bold;">记忆容量限制: </label>
-                        <select id="mem-limit-select" onchange="updateMemLimit(); setDirty();" style="padding: 5px 10px; border-radius:8px; border:1px solid #e8d5c4; outline:none; font-family: inherit; color: var(--text-main);">
-                            <option value="50">最多 50 条</option><option value="100">最多 100 条</option><option value="unlimited">不限制</option>
-                        </select>
-                    </div>
-                    
-                    <textarea id="standard-editor-ui" class="editor" oninput="setDirty()"></textarea>
+                    <textarea id="standard-editor-ui" class="editor" oninput="setDirty();updateTokenDisplay()"></textarea>
                     <div id="json-editor-ui"></div>
                     
-                    <!-- 🌟 功能设置编辑区 🌟 -->
                     <div id="config-editor-ui">
                         <div class="input-group"><label>Agent 名称</label><input type="text" id="set-ai-name" class="modal-input" oninput="setDirty()"></div>
                         <div class="input-group"><label>您的 名称</label><input type="text" id="set-user-name" class="modal-input" oninput="setDirty()"></div>
@@ -295,21 +392,75 @@
                         </div>
                         <div class="input-group" id="proactive-time-group" style="opacity: 0.5;">
                             <label>允许主动回复的时间段 (开始 - 结束)</label>
-                            <div style="display: flex; gap: 10px;">
-                                <input type="time" id="set-proactive-start" class="modal-input" value="08:00" disabled onchange="setDirty()">
-                                <input type="time" id="set-proactive-end" class="modal-input" value="22:00" disabled onchange="setDirty()">
+                            <div style="display: flex; gap: 16px; align-items: center;">
+                                <div style="display: flex; gap: 4px; align-items: center;">
+                                    <select id="set-proactive-start-h" class="time-select" disabled onchange="setDirty()"></select>
+                                    <span style="color: var(--text-sub); font-weight: bold;">:</span>
+                                    <select id="set-proactive-start-m" class="time-select" disabled onchange="setDirty()"></select>
+                                </div>
+                                <span style="color: var(--text-sub);">至</span>
+                                <div style="display: flex; gap: 4px; align-items: center;">
+                                    <select id="set-proactive-end-h" class="time-select" disabled onchange="setDirty()"></select>
+                                    <span style="color: var(--text-sub); font-weight: bold;">:</span>
+                                    <select id="set-proactive-end-m" class="time-select" disabled onchange="setDirty()"></select>
+                                </div>
                             </div>
                         </div>
                         <div class="input-group" id="proactive-interval-group" style="opacity: 0.5;">
-                            <label>主动消息触发间隔 (单位：分钟) <span style="font-size: 0.8rem; font-weight: normal;">(大模型将在最低与最高值间随机延迟)</span></label>
-                            <div style="display: flex; gap: 10px;">
-                                <input type="number" id="set-proactive-min" class="modal-input" placeholder="最低间隔 (默认120)" disabled oninput="setDirty()">
-                                <input type="number" id="set-proactive-max" class="modal-input" placeholder="最高间隔 (默认240)" disabled oninput="setDirty()">
+                            <label>主动消息触发间隔 <span style="font-size: 0.8rem; font-weight: normal;">(系统在范围内随机延迟)</span></label>
+                            <div style="margin-bottom: 12px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
+                                    <span style="font-size: 0.85rem; color: var(--text-sub);">最低间隔</span>
+                                    <span class="slider-val" id="proactive-min-display">2小时</span>
+                                </div>
+                                <input type="range" id="set-proactive-min" class="range-slider" min="30" max="480" value="120" step="30" disabled oninput="onProactiveSliderChange(); setDirty()">
+                            </div>
+                            <div>
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
+                                    <span style="font-size: 0.85rem; color: var(--text-sub);">最高间隔</span>
+                                    <span class="slider-val" id="proactive-max-display">4小时</span>
+                                </div>
+                                <input type="range" id="set-proactive-max" class="range-slider" min="60" max="600" value="240" step="30" disabled oninput="onProactiveSliderChange(); setDirty()">
+                            </div>
+                        </div>
+                        <div style="height: 1px; background: rgba(232,213,196,0.5); margin: 15px 0;"></div>
+                        <div class="input-group">
+                            <label>🎨 调色盘</label>
+                            <div class="theme-row" id="theme-swatches">
+                                <div class="theme-swatch active" data-theme="default" onclick="selectTheme('default')">
+                                    <div class="swatch-dot" style="background: linear-gradient(135deg, #d4a373, #faedcd);"></div>
+                                    <span>默认</span>
+                                </div>
+                                <div class="theme-swatch" data-theme="mint" onclick="selectTheme('mint')">
+                                    <div class="swatch-dot" style="background: linear-gradient(135deg, #6ba292, #e2f0e8);"></div>
+                                    <span>青岚</span>
+                                </div>
+                                <div class="theme-swatch" data-theme="sakura" onclick="selectTheme('sakura')">
+                                    <div class="swatch-dot" style="background: linear-gradient(135deg, #c97d8b, #fae8ec);"></div>
+                                    <span>樱语</span>
+                                </div>
                             </div>
                         </div>
                     </div>
 
-                    <div style="text-align: right; margin-top: 20px;">
+                    <div id="lobster-panel">
+                        <div class="lobster-info">
+                            <p><strong>🦀 OpenClaw 中间件状态控制</strong></p>
+                            <p>通过 OpenClaw，您可以让本系统直接接管微信、QQ 等，作为私人 Agent 自动回复消息。</p>
+                            <div style="display: flex; gap: 15px; margin-top: 20px; align-items: center; background: rgba(232, 213, 196, 0.2); padding: 15px; border-radius: 12px;">
+                                <label class="switch">
+                                  <input type="checkbox" id="lobster-toggle" onchange="toggleLobsterState(this)">
+                                  <span class="slider round"></span>
+                                </label>
+                                <span id="lobster-toggle-text" style="font-weight: bold; color: #e07a5f; font-size: 1.1rem;">接管已暂停</span>
+                            </div>
+                            <div style="margin-top: 20px; padding-top: 20px; border-top: 1px dashed rgba(212, 163, 115, 0.4);">
+                                <button class="lobster-btn" onclick="checkLobsterConnection()">📡 检查本地桥接通信</button>
+                                <div id="lobster-conn-status" style="margin-top: 15px; font-size: 0.95rem; color: var(--text-sub);">点击上方按钮进行探测...</div>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="text-align: right; margin-top: 20px;" id="save-btn-container">
                         <button class="icon-btn" style="display: inline-flex; background: var(--primary-color); color: white;" onclick="saveContent()">💾 录入 / 保存修改</button>
                     </div>
                 </div>
@@ -361,10 +512,115 @@
             timeGrp.style.opacity = isChecked ? '1' : '0.5';
             intGrp.style.opacity = isChecked ? '1' : '0.5';
             
-            document.getElementById('set-proactive-start').disabled = !isChecked;
-            document.getElementById('set-proactive-end').disabled = !isChecked;
+            document.getElementById('set-proactive-start-h').disabled = !isChecked;
+            document.getElementById('set-proactive-start-m').disabled = !isChecked;
+            document.getElementById('set-proactive-end-h').disabled = !isChecked;
+            document.getElementById('set-proactive-end-m').disabled = !isChecked;
             document.getElementById('set-proactive-min').disabled = !isChecked;
             document.getElementById('set-proactive-max').disabled = !isChecked;
+        }
+
+        function onProactiveSliderChange() {
+            const minSlider = document.getElementById('set-proactive-min');
+            const maxSlider = document.getElementById('set-proactive-max');
+            let minVal = parseInt(minSlider.value);
+            let maxVal = parseInt(maxSlider.value);
+            if (minVal >= maxVal) {
+                if (document.activeElement === minSlider) maxSlider.value = minVal + 30;
+                else minSlider.value = maxVal - 30;
+                minVal = parseInt(minSlider.value);
+                maxVal = parseInt(maxSlider.value);
+            }
+            document.getElementById('proactive-min-display').innerText = formatMinutes(minVal);
+            document.getElementById('proactive-max-display').innerText = formatMinutes(maxVal);
+        }
+
+        let pendingTheme = 'default';
+
+        function applyTheme(name) {
+            document.documentElement.dataset.theme = name || 'default';
+            document.querySelectorAll('.theme-swatch').forEach(el => {
+                el.classList.toggle('active', el.dataset.theme === name);
+            });
+        }
+
+        function selectTheme(name) {
+            pendingTheme = name;
+            document.querySelectorAll('.theme-swatch').forEach(el => {
+                el.classList.toggle('active', el.dataset.theme === name);
+            });
+            setDirty();
+        }
+
+        async function loadThemeFromConfig() {
+            try {
+                const res = await fetch(`/api/read/${encodeURIComponent('模型配置')}/config.json`);
+                if (res.ok) {
+                    const cfg = await res.json();
+                    const theme = cfg.theme || 'default';
+                    pendingTheme = theme;
+                    applyTheme(theme);
+                }
+            } catch(e) {}
+        }
+
+        function estimateTokens(text) {
+            if (!text) return 0;
+            return Math.ceil(text.length * 0.65);
+        }
+
+        function updateTokenDisplay() {
+            const badge = document.getElementById('token-badge');
+            const showPages = ['人物档案', '用户档案', '临时记忆', '记忆管理'];
+            if (!showPages.includes(currentModuleName)) {
+                badge.style.display = 'none'; return;
+            }
+            let text = '';
+            if (currentModuleType === 'txt') {
+                text = document.getElementById('standard-editor-ui').value;
+            } else if (currentModuleType === 'json_temp' || currentModuleType === 'json_long') {
+                text = JSON.stringify(currentJsonData);
+            }
+            if (text) {
+                badge.style.display = 'inline-block';
+                badge.innerText = `≈ ${estimateTokens(text)} tokens`;
+            } else {
+                badge.style.display = 'none';
+            }
+        }
+
+        function formatMinutes(m) {
+            if (m < 60) return m + '分钟';
+            const h = Math.floor(m / 60);
+            const rest = m % 60;
+            return rest > 0 ? h + '时' + rest + '分' : h + '小时';
+        }
+
+        function populateTimeSelects() {
+            ['start', 'end'].forEach(prefix => {
+                ['h', 'm'].forEach(type => {
+                    const el = document.getElementById(`set-proactive-${prefix}-${type}`);
+                    if (!el || el.options.length > 0) return;
+                    const max = type === 'h' ? 23 : 59;
+                    for (let i = 0; i <= max; i++) {
+                        const opt = document.createElement('option');
+                        opt.value = i; opt.innerText = String(i).padStart(2, '0');
+                        el.appendChild(opt);
+                    }
+                });
+            });
+        }
+
+        function getProactiveTime(prefix) {
+            const h = String(document.getElementById(`set-proactive-${prefix}-h`).value).padStart(2, '0');
+            const m = String(document.getElementById(`set-proactive-${prefix}-m`).value).padStart(2, '0');
+            return h + ':' + m;
+        }
+
+        function setProactiveTime(prefix, value) {
+            const [h, m] = (value || '00:00').split(':');
+            document.getElementById(`set-proactive-${prefix}-h`).value = parseInt(h) || 0;
+            document.getElementById(`set-proactive-${prefix}-m`).value = parseInt(m) || 0;
         }
 
         async function checkAppInit() {
@@ -384,7 +640,7 @@
         async function finishWizard() {
             const ai_name = document.getElementById('setup-ai-name').value.trim() || "小白";
             const user_name = document.getElementById('setup-user-name').value.trim() || "小黑";
-            const cfg = { url: "http://localhost:11434/v1/chat/completions", key: "", model: "", hide_think: true, ai_name, user_name, proactive_enabled: false, proactive_start: "08:00", proactive_end: "22:00", proactive_min: 120, proactive_max: 240 };
+            const cfg = { url: "http://localhost:11434/v1/chat/completions", key: "", model: "", hide_think: true, ai_name, user_name, lobster_enabled: false, proactive_enabled: false, proactive_start: "00:00", proactive_end: "23:59", proactive_min: 120, proactive_max: 240 };
             
             try {
                 let res = await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: '模型配置', filename: 'config.json', content: JSON.stringify(cfg) }) });
@@ -400,6 +656,7 @@
         }
 
         function startApp() {
+            loadThemeFromConfig();
             document.getElementById('wizard-overlay').style.display = 'none';
             document.getElementById('app-container').style.display = 'flex';
             document.getElementById('ui-agent-name').innerText = GLOBAL_AI_NAME;
@@ -417,7 +674,6 @@
             if(viewName === 'chat') initChatHistory();
         }
 
-        // 心跳与主动破冰轮询机制
         setInterval(async () => {
             try {
                 const res = await fetch(`/api/list/`);
@@ -543,8 +799,11 @@
                     dot.className = "conn-dot green"; text.innerText = "已连接"; text.style.color = "#52b788";
                     dataList.innerHTML = '';
                     data.models.forEach(m => { const opt = document.createElement('option'); opt.value = m; dataList.appendChild(opt); });
-                    if(!modelInput.value) modelInput.value = data.models[0];
-                    showToast('探测成功');
+                    
+                    // 🌟 强行覆盖原本输入的内容为探测结果
+                    modelInput.value = data.models[0];
+                    
+                    showToast('探测成功，已自动替换模型名称');
                 } else throw new Error();
             } catch(e) { dot.className = "conn-dot red"; text.innerText = "连接异常"; text.style.color = "#e07a5f"; showToast('获取失败');}
         }
@@ -684,6 +943,58 @@
             setTimeout(() => { chatBox.scrollTop = chatBox.scrollHeight; }, 10);
         }
 
+        // ===== 🦞 龙虾(OpenClaw)专属区域 开始 🦞 =====
+        async function loadLobsterConfigState() {
+            try {
+                const res = await fetch(`/api/read/${encodeURIComponent('模型配置')}/config.json`);
+                if (res.ok) {
+                    const cfg = await res.json();
+                    const toggle = document.getElementById('lobster-toggle');
+                    const text = document.getElementById('lobster-toggle-text');
+                    toggle.checked = cfg.lobster_enabled === true;
+                    text.innerText = toggle.checked ? "接管已开启 (Agent 正在工作)" : "接管已暂停 (由您手动回复)";
+                    text.style.color = toggle.checked ? "#52b788" : "#e07a5f";
+                }
+            } catch(e) {}
+        }
+
+        async function toggleLobsterState(el) {
+            const isEnabled = el.checked;
+            const text = document.getElementById('lobster-toggle-text');
+            text.innerText = isEnabled ? "接管已开启 (Agent 正在工作)" : "接管已暂停 (由您手动回复)";
+            text.style.color = isEnabled ? "#52b788" : "#e07a5f";
+            
+            try {
+                const res = await fetch(`/api/read/${encodeURIComponent('模型配置')}/config.json`);
+                let cfg = await res.json();
+                cfg.lobster_enabled = isEnabled;
+                await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: '模型配置', filename: 'config.json', content: JSON.stringify(cfg, null, 2) }) });
+                showToast(isEnabled ? 'Agent 已接管消息回复' : 'Agent 已暂停回复，进入休眠');
+            } catch(e) { 
+                showToast('开关状态保存失败，请检查网络'); 
+            }
+        }
+
+        async function checkLobsterConnection() {
+            const statusEl = document.getElementById('lobster-conn-status');
+            statusEl.innerHTML = "📡 正在向服务端发送探测信号...";
+            statusEl.style.color = "var(--text-main)";
+            
+            try {
+                const res = await fetch('/v1/models'); 
+                if (res.ok) {
+                    statusEl.innerHTML = "✅ <strong>桥接通道畅通！</strong><br><br>服务端已完美伪装为标准 API。<br>请在 OpenClaw 中配置:<br>Base URL: <b>http://127.0.0.1:5622/v1</b><br>API Key / Model Name: 任意填写即可。";
+                    statusEl.style.color = "#52b788";
+                } else {
+                    throw new Error("HTTP Error");
+                }
+            } catch(e) {
+                statusEl.innerHTML = "❌ <strong>桥接异常！</strong> 未能得到服务端响应，请检查 server.py 是否在运行。";
+                statusEl.style.color = "#e07a5f";
+            }
+        }
+        // ===== 🦞 龙虾(OpenClaw)专属区域 结束 🦞 =====
+
         async function loadModule(name, type, el) {
             if (isDirty) {
                 if (!confirm("有未保存的修改，确认放弃吗？")) return;
@@ -691,22 +1002,27 @@
             }
             currentModuleType = type;
             currentModuleName = name;
-            pendingAvatarBase64 = null; 
-            
+            pendingAvatarBase64 = null;
+            document.getElementById('token-badge').style.display = 'none';
+
             if (el) {
                 document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
                 if (el.classList.contains('nav-item')) el.classList.add('active');
             }
 
-            const stdEditor = document.getElementById('standard-editor-ui'), jsonEditor = document.getElementById('json-editor-ui'), configEditor = document.getElementById('config-editor-ui'), memSettings = document.getElementById('memory-settings');
+            const stdEditor = document.getElementById('standard-editor-ui'), jsonEditor = document.getElementById('json-editor-ui'), configEditor = document.getElementById('config-editor-ui');
             const avatarArea = document.getElementById('avatar-manage-area');
             const innerDesc = document.getElementById('inner-thoughts-desc');
+            const lobsterPanel = document.getElementById('lobster-panel');
+            const saveBtnContainer = document.getElementById('save-btn-container');
             const mapInfo = FOLDER_MAP[name];
             
             document.getElementById('module-title').innerText = name;
 
             avatarArea.style.display = 'none';
             innerDesc.style.display = 'none';
+            lobsterPanel.style.display = 'none';
+            saveBtnContainer.style.display = 'block';
 
             if (name === '人物档案' || name === '用户档案') {
                 avatarArea.style.display = 'flex';
@@ -716,39 +1032,48 @@
                 innerDesc.style.display = 'block';
             }
 
-            if (type === 'txt') {
-                stdEditor.style.display = 'block'; jsonEditor.style.display = 'none'; configEditor.style.display = 'none'; memSettings.style.display = 'none';
+            if (type === 'lobster') {
+                stdEditor.style.display = 'none'; jsonEditor.style.display = 'none'; configEditor.style.display = 'none';
+                saveBtnContainer.style.display = 'none';
+                lobsterPanel.style.display = 'flex';
+                await loadLobsterConfigState();
+            }
+            else if (type === 'txt') {
+                stdEditor.style.display = 'block'; jsonEditor.style.display = 'none'; configEditor.style.display = 'none';
                 try {
                     const res = await fetch(`/api/read/${encodeURIComponent(mapInfo.folder)}/${encodeURIComponent(mapInfo.file)}`);
                     stdEditor.value = res.ok ? await res.text() : '';
+                    updateTokenDisplay();
                 } catch(e) { stdEditor.value = ''; }
-            } 
+            }
             else if (type === 'json_temp' || type === 'json_long') {
                 stdEditor.style.display = 'none'; jsonEditor.style.display = 'flex'; configEditor.style.display = 'none';
-                memSettings.style.display = type === 'json_long' ? 'block' : 'none';
                 try {
                     const res = await fetch(`/api/read/${encodeURIComponent(mapInfo.folder)}/${encodeURIComponent(mapInfo.file)}`);
-                    currentJsonData = res.ok ? await res.json() : (type === 'json_long' ? {limit:"unlimited", items:[]} : []);
-                    if(type === 'json_long') document.getElementById('mem-limit-select').value = currentJsonData.limit || "unlimited";
+                    currentJsonData = res.ok ? await res.json() : (type === 'json_long' ? {items:[]} : []);
                     type === 'json_temp' ? renderTempMemory() : renderLongMemory();
-                } catch(e) { 
-                    currentJsonData = type === 'json_long' ? {limit:"unlimited", items:[]} : [];
+                } catch(e) {
+                    currentJsonData = type === 'json_long' ? {items:[]} : [];
                     type === 'json_temp' ? renderTempMemory() : renderLongMemory();
                 }
             }
             else if (type === 'config') {
-                stdEditor.style.display = 'none'; jsonEditor.style.display = 'none'; memSettings.style.display = 'none'; configEditor.style.display = 'flex';
+                stdEditor.style.display = 'none'; jsonEditor.style.display = 'none'; configEditor.style.display = 'flex';
+                populateTimeSelects();
                 try {
                     const res = await fetch(`/api/read/${encodeURIComponent('模型配置')}/config.json`);
                     let cfg = res.ok ? await res.json() : {};
                     document.getElementById('set-ai-name').value = cfg.ai_name || GLOBAL_AI_NAME;
                     document.getElementById('set-user-name').value = cfg.user_name || GLOBAL_USER_NAME;
                     document.getElementById('set-proactive-enable').checked = cfg.proactive_enabled || false;
-                    document.getElementById('set-proactive-start').value = cfg.proactive_start || "08:00";
-                    document.getElementById('set-proactive-end').value = cfg.proactive_end || "22:00";
+                    setProactiveTime('start', cfg.proactive_start || '00:00');
+                    setProactiveTime('end', cfg.proactive_end || '23:59');
                     document.getElementById('set-proactive-min').value = cfg.proactive_min || 120;
                     document.getElementById('set-proactive-max').value = cfg.proactive_max || 240;
+                    onProactiveSliderChange();
                     toggleProactive();
+                    pendingTheme = cfg.theme || 'default';
+                    applyTheme(pendingTheme);
                 } catch(e) {}
             }
         }
@@ -756,7 +1081,7 @@
         function renderTempMemory() {
             const ui = document.getElementById('json-editor-ui'); ui.innerHTML = '';
             document.getElementById('module-title').innerText = `临时记忆 (${currentJsonData.length}条上下文)`;
-            if(currentJsonData.length === 0) { ui.innerHTML = '<p style="color:#a59385; text-align:center;">暂无上下文</p>'; return; }
+            if(currentJsonData.length === 0) { ui.innerHTML = '<p style="color:#a59385; text-align:center;">暂无上下文</p>'; updateTokenDisplay(); return; }
             currentJsonData.forEach((msg, index) => {
                 const roleName = msg.role === 'agent' ? `${GLOBAL_AI_NAME}` : `${GLOBAL_USER_NAME}`;
                 const color = msg.role === 'agent' ? '#d4a373' : '#bc8a5f';
@@ -766,20 +1091,22 @@
                     <button class="mem-del-btn" onclick="deleteJsonItem(${index})">删除</button>`;
                 ui.appendChild(card);
             });
+            updateTokenDisplay();
         }
 
         function renderLongMemory() {
             const ui = document.getElementById('json-editor-ui'); ui.innerHTML = '';
             const items = currentJsonData.items || [];
             document.getElementById('module-title').innerText = `记忆管理 (${items.length}条核心记忆)`;
-            if(items.length === 0) { ui.innerHTML = '<p style="color:#a59385; text-align:center;">大模型还在观察中，暂未生成记忆摘要...</p>'; return; }
+            if(items.length === 0) { ui.innerHTML = '<p style="color:#a59385; text-align:center;">大模型还在观察中，暂未生成记忆摘要...</p>'; updateTokenDisplay(); return; }
             items.forEach((mem, index) => {
                 const card = document.createElement('div'); card.className = 'memory-card'; card.style.borderLeftColor = '#e07a5f'; 
-                card.innerHTML = `<div class="memory-meta"><span>归档: ${mem.time || ''}</span><span style="color:#e07a5f;">重要度: ${mem.importance}/5</span></div>
+                card.innerHTML = `<div class="memory-meta"><span>归档: ${mem.time || ''}</span><span style="color:#e07a5f;">重要度: ${mem.importance}/10</span></div>
                     <textarea class="memory-text" oninput="setDirty()" onchange="updateJsonData(${index}, 'content', this.value)">${mem.content}</textarea>
                     <button class="mem-del-btn" onclick="deleteJsonItem(${index})">抹除</button>`;
                 ui.appendChild(card);
             });
+            updateTokenDisplay();
         }
 
         function updateJsonData(index, key, val) {
@@ -795,10 +1122,6 @@
             currentModuleType === 'json_temp' ? renderTempMemory() : renderLongMemory();
         }
 
-        function updateMemLimit() {
-            if(currentModuleType === 'json_long') currentJsonData.limit = document.getElementById('mem-limit-select').value;
-        }
-
         async function saveContent() {
             if (currentModuleType === 'config') {
                 const res = await fetch(`/api/read/${encodeURIComponent('模型配置')}/config.json`);
@@ -806,16 +1129,18 @@
                 cfg.ai_name = document.getElementById('set-ai-name').value;
                 cfg.user_name = document.getElementById('set-user-name').value;
                 cfg.proactive_enabled = document.getElementById('set-proactive-enable').checked;
-                cfg.proactive_start = document.getElementById('set-proactive-start').value;
-                cfg.proactive_end = document.getElementById('set-proactive-end').value;
+                cfg.proactive_start = getProactiveTime('start');
+                cfg.proactive_end = getProactiveTime('end');
                 cfg.proactive_min = parseInt(document.getElementById('set-proactive-min').value) || 120;
                 cfg.proactive_max = parseInt(document.getElementById('set-proactive-max').value) || 240;
-                
+                cfg.theme = pendingTheme;
+
                 try {
                     let s_res = await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: '模型配置', filename: 'config.json', content: JSON.stringify(cfg, null, 2) }) });
                     if(!s_res.ok) throw new Error();
                     GLOBAL_AI_NAME = cfg.ai_name; GLOBAL_USER_NAME = cfg.user_name;
                     document.getElementById('ui-agent-name').innerText = GLOBAL_AI_NAME;
+                    applyTheme(pendingTheme);
                     showToast('设置保存成功'); isDirty = false;
                 } catch(e) { showToast('保存失败'); }
                 return;
