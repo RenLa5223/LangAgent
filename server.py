@@ -1,3 +1,23 @@
+import sys
+try:
+    sys.stdout.reconfigure(encoding='utf-8')
+except Exception:
+    pass
+
+# PyInstaller --noconsole 下 stdout 可能为 None 或受限，print 含 emoji 会崩
+import builtins as _bi
+_real_print = _bi.print
+def _safe_print(*args, **kwargs):
+    try:
+        _real_print(*args, **kwargs)
+    except Exception:
+        try:
+            _real_print(*(str(a).encode('ascii', errors='replace').decode('ascii') for a in args), **kwargs)
+        except Exception:
+            pass
+import builtins
+builtins.print = _safe_print
+
 import http.server
 import socketserver
 import json
@@ -9,12 +29,45 @@ import re
 import threading
 import time
 import mimetypes
+import webbrowser
 import base64
 import random
 from datetime import datetime
+try:
+    import wechat_agent
+    WECHAT_AVAILABLE = True
+except ImportError:
+    WECHAT_AVAILABLE = False
+    print("⚠️ wechat_agent 模块未安装，微信功能将不可用")
+
+# PyInstaller 打包后资源路径处理
+if getattr(sys, 'frozen', False):
+    _BASE_DIR = sys._MEIPASS
+else:
+    _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 原生窗口引用（供 /api/show 恢复窗口）
+_pywebview_window = None
+_pywebview_show = None
+
+def _app_path(rel_path):
+    """优先用外部文件（支持热更新），不存在则用打包内资源。"""
+    ext = os.path.join(os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else _BASE_DIR, rel_path)
+    if os.path.exists(ext):
+        return ext
+    bundled = os.path.join(_BASE_DIR, rel_path)
+    return bundled
 
 PORT = 5622
-DATA_DIR = "Data"
+APP_VERSION = "1.0.6"
+# 打包后 Program Files 无写权限，数据存用户目录
+if getattr(sys, 'frozen', False):
+    DATA_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'LangAgent')
+else:
+    DATA_DIR = "Data"
+
+if WECHAT_AVAILABLE:
+    wechat_agent.init(DATA_DIR)
 MEM_DIR = os.path.join(DATA_DIR, "记忆核心")
 CONFIG_DIR = os.path.join(DATA_DIR, "模型配置")
 AGENT_AVATAR_DIR = os.path.join(DATA_DIR, "人物头像")
@@ -35,8 +88,6 @@ api_cooldown_until = 0
 consecutive_failures = 0
 last_interaction_time = time.time()
 next_proactive_delay = random.uniform(120, 240) * 60
-model_status_cache = {"is_online": False, "last_check": 0}
-
 def update_interaction_time(cfg):
     global last_interaction_time, next_proactive_delay
     with global_state_lock:
@@ -91,19 +142,38 @@ def get_decay_score(item):
     half_life = 24.0 * (2.0 ** ((imp - 1.0) / 2.0))
     return round(imp * (2.0 ** (-hours_elapsed / half_life)), 2)
 
+MULTIMODAL_KW = ['vision', 'vl', 'gpt-4o', 'gpt-4', 'claude', 'gemini',
+                 'glm-4v', 'qwen-vl', 'multimodal', 'omni', 'llava',
+                 'cogvlm', 'minicpm-v', 'internvl', 'yi-vision']
+
+def _is_multimodal(model_name):
+    if not model_name:
+        return False
+    return any(kw in model_name.lower() for kw in MULTIMODAL_KW)
+
+CONTENT_REJECT_KW = ['content_filter', '内容安全', '违规', 'safety system',
+                     'content policy', 'content management', '无法处理该请求']
+
+def _is_rejected(reply_text):
+    if not reply_text:
+        return False
+    return any(kw in reply_text.lower() for kw in CONTENT_REJECT_KW)
+
+_last_api_error = ""
+
 def call_llm_with_circuit_breaker(cfg, messages, use_fallback=True):
-    global api_cooldown_until, consecutive_failures
-    
+    global api_cooldown_until, consecutive_failures, _last_api_error
+
     with global_state_lock: cooldown_time = api_cooldown_until
-        
+
     if time.time() < cooldown_time:
         return "（网络卡卡的，能再说一遍嘛？）" if use_fallback else None
-    
+
     payload = {"model": cfg['model'], "messages": messages, "stream": False}
     req = urllib.request.Request(cfg['url'], data=json.dumps(payload).encode('utf-8'), method='POST')
     req.add_header('Content-Type', 'application/json')
     if cfg['key'].strip(): req.add_header('Authorization', f"Bearer {cfg['key']}")
-    
+
     for attempt in range(2):
         try:
             resp = urllib.request.urlopen(req, timeout=60)
@@ -111,10 +181,19 @@ def call_llm_with_circuit_breaker(cfg, messages, use_fallback=True):
             resp_data = json.loads(resp.read().decode('utf-8'))
             reply = resp_data.get('choices', [{}])[0].get('message', {}).get('content', '') or resp_data.get('response', '') or resp_data.get('message', {}).get('content', '')
             if cfg['hide_think']: reply = re.sub(r'<think>.*?(?:</think>|$)', '', reply, flags=re.DOTALL).strip()
-            
+
             with global_state_lock: consecutive_failures = 0
+            _last_api_error = ""
             return reply
         except Exception as ex:
+            _last_api_error = str(ex)[:300]
+            try:
+                if hasattr(ex, 'read'):
+                    body = ex.read().decode('utf-8', errors='replace')[:300]
+                    if body:
+                        _last_api_error = body
+            except Exception:
+                pass
             time.sleep(1)
             
     with global_state_lock:
@@ -123,6 +202,54 @@ def call_llm_with_circuit_breaker(cfg, messages, use_fallback=True):
             api_cooldown_until = time.time() + 60
             
     return "（网络卡卡的，能再说一遍嘛？）" if use_fallback else None
+
+def call_llm_stream(cfg, messages):
+    """流式调用 LLM，逐 token yield 文本增量。连接失败时 yield None。"""
+    global api_cooldown_until, consecutive_failures
+
+    with global_state_lock: cooldown_time = api_cooldown_until
+    if time.time() < cooldown_time:
+        yield None; return
+
+    payload = {"model": cfg['model'], "messages": messages, "stream": True}
+    req = urllib.request.Request(cfg['url'], data=json.dumps(payload).encode('utf-8'), method='POST')
+    req.add_header('Content-Type', 'application/json')
+    if cfg['key'].strip(): req.add_header('Authorization', f"Bearer {cfg['key']}")
+
+    try:
+        resp = urllib.request.urlopen(req, timeout=120)
+        in_think = False
+        for raw_line in resp:
+            line = raw_line.decode('utf-8', errors='replace').strip()
+            if not line.startswith('data: '): continue
+            data = line[6:]
+            if data == '[DONE]': break
+            try:
+                chunk = json.loads(data)
+                delta = chunk.get('choices', [{}])[0].get('delta', {}).get('content', '')
+                if not delta: continue
+                if cfg.get('hide_think'):
+                    remaining = delta
+                    while remaining:
+                        if not in_think:
+                            idx = remaining.find('<think>')
+                            if idx == -1: yield remaining; break
+                            if idx > 0: yield remaining[:idx]
+                            remaining = remaining[idx + 7:]; in_think = True
+                        else:
+                            idx = remaining.find('</think>')
+                            if idx == -1: break
+                            remaining = remaining[idx + 8:]; in_think = False
+                else:
+                    yield delta
+            except: pass
+        with global_state_lock: consecutive_failures = 0
+    except Exception:
+        with global_state_lock:
+            consecutive_failures += 1
+            if consecutive_failures >= 3:
+                api_cooldown_until = time.time() + 60
+        yield None
 
 def auto_summarize_memory(cfg, recent_history):
     try:
@@ -133,15 +260,18 @@ def auto_summarize_memory(cfg, recent_history):
                 with open(inner_thoughts_path, 'r', encoding='utf-8') as f:
                     current_inner_thoughts = f.read()
 
-        sys_prompt = f"""你是{cfg.get("ai_name", "AI")}。请阅读以下你和他（{cfg.get("user_name", "用户")}）的近期对话。
-任务1：用写『内心私密日记』的口吻，总结这段对话中发生的关键事件或约定，用第一人称（我）。
-任务2：寻找对话中关于他的【新情报】（例如：家庭、目标、喜好、习惯等）。结合下面提供的【当前已有情报】，进行忽略、覆盖或新增，为他整理出一份最新、最完整的规范化档案。
+        sys_prompt = f"""你是{cfg.get("ai_name", "AI")}。请阅读以下你和{cfg.get("user_name", "用户")}的近期对话。
 
-【当前已有情报】：
-{current_inner_thoughts}
+任务1：用第一人称（我）写一段简短私密日记，总结这段对话中发生的关键事件或约定。
+任务2：从对话中提取关于他（{cfg.get("user_name", "用户")}）的【新情报】，只记录事实性信息（饮食喜好、习惯、近期状态等），不写叙事，不推测。如果某项情报在【已有情报】中已存在，不需要重复记录。
+
+⚠️ 绝对不要把你自己（{cfg.get("ai_name", "AI")}）的特征、习惯、行为写进 new_user_profile。
+
+【已有情报】：
+{current_inner_thoughts[-800:]}
 
 你必须且只能返回纯JSON数据，不要包含```json标记。格式要求如下：
-{{"content": "今天他跟我说...", "importance": 5, "new_user_profile": "籍贯：xxx\\n身高：xxx\\n饮食喜好：xxx\\n近期状态：xxx"}}
+{{"content": "今天他跟我说...", "importance": 5, "new_user_profile": "饮食喜好：xxx\\n习惯：xxx\\n近期状态：xxx"}}
 【重要度说明】：1=寒暄闲聊转眼就忘, 3=一般日常几天后模糊, 5=值得记住的互动, 7=重要约定或情绪波动, 10=影响一生的关键事件"""
         
         chat_text = "\n".join([f"{cfg.get('ai_name', 'AI') if msg['role'] == 'agent' else cfg.get('user_name', '用户')}: {msg['content']}" for msg in recent_history])
@@ -169,11 +299,9 @@ def auto_summarize_memory(cfg, recent_history):
 
                 new_facts = str(new_mem.get("new_user_profile", "")).strip()
                 if new_facts and new_facts.lower() not in ["无", "none", "null", ""]:
-                    formatted_inner = f"【{cfg.get('ai_name', 'AI')}】在 {time.strftime('%Y-%m-%d %H:%M:%S')} 更新的信息\n\n{new_facts}"
+                    entry = f"\n\n【{time.strftime('%Y-%m-%d %H:%M')}】\n{new_facts}"
                     with file_lock:
-                        tmp_path = inner_thoughts_path + ".tmp"
-                        with open(tmp_path, 'w', encoding='utf-8') as f: f.write(formatted_inner)
-                        if os.path.exists(tmp_path): os.replace(tmp_path, inner_thoughts_path)
+                        with open(inner_thoughts_path, 'a', encoding='utf-8') as f: f.write(entry)
                 
                 print(f"[{time.strftime('%H:%M:%S')}] 🧠 [记忆引擎] 时间衰减机制刷新完毕，画像提取成功！")
             except Exception: pass
@@ -204,53 +332,52 @@ def proactive_worker():
             if passed_time > target_delay:
                 ai_name = cfg.get("ai_name", "AI")
                 user_name = cfg.get("user_name", "用户")
-                prompt = f"你是{ai_name}。{user_name}已经有一段时间没说话了，请根据你的人设和内心档案，主动发一条不超过15个字的日常关心或分享。不要用任何解释和前缀，直接给出对话内容。"
+                # 读取最近对话，生成上下文感知的主动消息
+                history_file = os.path.join(MEM_DIR, "chat_history.json")
+                with file_lock:
+                    history = safe_json_read(history_file, [])
+                recent = history[-6:]
+                context_str = ""
+                if recent:
+                    lines = []
+                    for m in recent:
+                        role = ai_name if m['role'] == 'agent' else user_name
+                        lines.append(f"{role}: {m['content']}")
+                    context_str = "\n".join(lines)
+                # 读取人物档案以保持角色个性
+                profile_text = ""
+                try:
+                    profile_path = os.path.join(AGENT_PROFILE_DIR, "人物档案.txt")
+                    if os.path.exists(profile_path):
+                        with open(profile_path, 'r', encoding='utf-8') as f:
+                            profile_text = f.read()[:600]
+                except Exception:
+                    pass
+                prompt = f"你是{ai_name}。\n【人设】{profile_text}\n\n以下是你们最近的对话：\n\n{context_str}\n\n{user_name}已经有一段时间没回复了。请根据人设和上述对话上下文，主动发一条自然延续话题的消息。如果对方之前说了要去做什么，可以关心进度；如果之前的话题被打断，可以尝试接续。不超过20个字，不要用任何解释和前缀，直接给出对话内容。"
                 
                 reply = call_llm_with_circuit_breaker(cfg, [{"role": "user", "content": prompt}], use_fallback=False)
                 if reply:
                     parts = [p.strip() for p in re.split(r'(?<=[。！？!\?\n])', reply) if p.strip()]
                     if not parts: parts = [reply]
-                    history_file = os.path.join(MEM_DIR, "chat_history.json")
                     with file_lock:
                         history = safe_json_read(history_file, [])
                         for p in parts: history.append({"role": "agent", "content": p, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
                         atomic_json_write(history_file, history)
                     update_interaction_time(cfg)
                     print(f"[{time.strftime('%H:%M:%S')}] 💌 [主动关怀] 消息已推入时间流")
+                    # 微信在线则同步推送
+                    if WECHAT_AVAILABLE and wechat_agent.get_state()["running"]:
+                        try:
+                            acct = wechat_agent.get_account()
+                            to_user = acct.get("user_id", "")
+                            if to_user:
+                                wechat_agent.send_message(to_user, ''.join(parts))
+                                print(f"[{time.strftime('%H:%M:%S')}] 💌 [主动关怀] 已同步推送至微信")
+                        except Exception:
+                            pass
         except Exception: pass
 
 threading.Thread(target=proactive_worker, daemon=True).start()
-
-def model_health_checker():
-    """后台线程：定期探测大模型 /models 端点，更新缓存。心跳接口只读不查，永不阻塞。"""
-    first_run = True
-    while True:
-        time.sleep(3 if first_run else 30)
-        first_run = False
-        try:
-            cfg_path = os.path.join(CONFIG_DIR, "config.json")
-            cfg = safe_json_read(cfg_path, {})
-            url = cfg.get('url', '')
-            if not url:
-                with global_state_lock:
-                    model_status_cache["is_online"] = False
-                    model_status_cache["last_check"] = time.time()
-                continue
-
-            check_url = url.replace('/chat/completions', '/models') if '/chat/completions' in url else url.rstrip('/') + '/models'
-            req = urllib.request.Request(check_url, method='GET')
-            if cfg.get('key', '').strip():
-                req.add_header('Authorization', f"Bearer {cfg['key']}")
-            response = urllib.request.urlopen(req, timeout=5)
-            with global_state_lock:
-                model_status_cache["is_online"] = (response.getcode() == 200)
-                model_status_cache["last_check"] = time.time()
-        except Exception:
-            with global_state_lock:
-                model_status_cache["is_online"] = False
-                model_status_cache["last_check"] = time.time()
-
-threading.Thread(target=model_health_checker, daemon=True).start()
 
 def memory_decay_cleaner():
     """后台线程：每30分钟对所有长期记忆做一次衰减评分，剔除已归零的记忆。"""
@@ -274,9 +401,105 @@ def memory_decay_cleaner():
 
 threading.Thread(target=memory_decay_cleaner, daemon=True).start()
 
+def _wx_log(msg):
+    try:
+        log_file = os.path.join(DATA_DIR, 'wechat_debug.log')
+        with open(log_file, 'a', encoding='utf-8') as f:
+            f.write(f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] {msg}\n')
+    except Exception:
+        pass
+
+def handle_wechat_message(msg, account):
+    """收到微信消息时的回调：通过 LLM 生成回复并发送。"""
+    try:
+        item_list = msg.get("msg", {}).get("item_list", msg.get("item_list", []))
+        user_text = ""
+        for item in item_list:
+            if item.get("type") == 1:
+                ti = item.get("text_item", {})
+                user_text += ti.get("text", ti.get("content", ""))
+        if not user_text.strip():
+            _wx_log('empty text, skip')
+            return
+        from_user = msg.get("msg", {}).get("from_user_id", msg.get("from_user_id", ""))
+        if not from_user:
+            _wx_log('no from_user, skip')
+            return
+        context_token = msg.get("msg", {}).get("context_token", msg.get("context_token", ""))
+        _wx_log(f'RECV from={from_user[:30]} text={user_text[:80]}')
+        print(f"[{time.strftime('%H:%M:%S')}] 📥 [微信] {from_user[:20]}...: {user_text[:50]}")
+
+        cfg_path = os.path.join(CONFIG_DIR, "config.json")
+        cfg = safe_json_read(cfg_path, {})
+        ai_name = cfg.get("ai_name", "AI")
+        user_name = cfg.get("user_name", "用户")
+        system_prompt = f"你是{ai_name}。请严格遵循人设与我聊天，永远不要承认自己是AI程序，保持自然的情感。\n\n【基础档案】\n"
+        with file_lock:
+            profile_path = os.path.join(AGENT_PROFILE_DIR, "人物档案.txt")
+            if os.path.exists(profile_path):
+                with open(profile_path, 'r', encoding='utf-8') as f: system_prompt += f.read() + "\n"
+            user_profile_path = os.path.join(USER_PROFILE_DIR, "用户档案.txt")
+            if os.path.exists(user_profile_path):
+                with open(user_profile_path, 'r', encoding='utf-8') as f:
+                    u_info = f.read().strip()
+                    if u_info: system_prompt += f"\n【{user_name}（我）的档案】\n{u_info}\n"
+            summary_file = os.path.join(MEM_DIR, "memory_summary.json")
+            mem_summary = safe_json_read(summary_file, {})
+            if mem_summary.get('items'):
+                system_prompt += "\n【长期记忆日记】\n"
+                for m in mem_summary['items']: system_prompt += f"- [{m['time']}] {m['content']}\n"
+            history_file = os.path.join(MEM_DIR, "chat_history.json")
+            chat_history = safe_json_read(history_file, [])
+
+        recent_history = chat_history[-21:]
+        formatted_history = []
+        for m in recent_history:
+            role = "assistant" if m["role"] == "agent" else m["role"]
+            formatted_history.append({"role": role, "content": m["content"]})
+        if formatted_history and formatted_history[0]["role"] == "assistant":
+            formatted_history.insert(0, {"role": "user", "content": "（继续之前的对话）"})
+
+        llm_messages = []
+        if formatted_history:
+            formatted_history[0]["content"] = system_prompt + "\n\n" + formatted_history[0]["content"]
+            llm_messages.extend(formatted_history)
+            llm_messages.append({"role": "user", "content": user_text})
+        else:
+            llm_messages.append({"role": "user", "content": system_prompt + "\n\n" + user_text})
+
+        ai_reply = call_llm_with_circuit_breaker(cfg, llm_messages, use_fallback=True)
+        if not ai_reply: ai_reply = "（网络卡卡的，能再说一遍嘛？）"
+        _wx_log(f'LLM reply len={len(ai_reply)} text={ai_reply[:80]}')
+
+        parts = [p.strip() for p in re.split(r'(?<=[。！？!?\n])', ai_reply) if p.strip()]
+        if not parts: parts = [ai_reply]
+        clean_reply = ''.join(parts)
+
+        with file_lock:
+            safe_chat_history = safe_json_read(history_file, [])
+            safe_chat_history.append({"role": "user", "content": user_text, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+            for p in parts:
+                safe_chat_history.append({"role": "agent", "content": p, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+            if len(safe_chat_history) >= 22:
+                to_summarize = safe_chat_history[:20]
+                safe_chat_history = safe_chat_history[20:]
+                atomic_json_write(history_file, safe_chat_history)
+                threading.Thread(target=auto_summarize_memory, args=(cfg, to_summarize)).start()
+            else:
+                atomic_json_write(history_file, safe_chat_history)
+
+        update_interaction_time(cfg)
+        if clean_reply.strip():
+            ok = wechat_agent.send_message(from_user, clean_reply, account, context_token)
+            _wx_log(f'SEND ok={ok} reply={clean_reply[:60]}')
+        else:
+            _wx_log('SEND skipped: empty clean_reply')
+        print(f"[{time.strftime('%H:%M:%S')}] 💬 [微信] 回复: {clean_reply[:40]}")
+    except Exception as e:
+        _wx_log(f'EXCEPTION: {str(e)[:200]}')
+        print(f"[{time.strftime('%H:%M:%S')}] ⚠️ [微信] 异常: {str(e)[:150]}")
 class AgentHandler(http.server.BaseHTTPRequestHandler):
 
-    # ===== 🦞 龙虾(OpenClaw)专属区域 开始 🦞 =====
     def do_OPTIONS(self):
         self.send_response(200)
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -284,75 +507,35 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "X-Requested-With, Content-type, Authorization")
         self.end_headers()
 
-    def _send_openai_response(self, text, is_stream, model_name):
-        if is_stream:
-            self.send_response(200)
-            self.send_header('Content-type', 'text/event-stream; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Cache-Control', 'no-cache')
-            self.end_headers()
-            
-            chunk = {
-                "id": "chatcmpl-" + str(int(time.time())),
-                "object": "chat.completion.chunk",
-                "created": int(time.time()),
-                "model": model_name or "agent-model",
-                "choices": [{"index": 0, "delta": {"role": "assistant", "content": text}, "finish_reason": None}]
-            }
-            self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode('utf-8'))
-            end_chunk = chunk.copy()
-            end_chunk["choices"][0]["delta"] = {}
-            end_chunk["choices"][0]["finish_reason"] = "stop"
-            self.wfile.write(f"data: {json.dumps(end_chunk, ensure_ascii=False)}\n\n".encode('utf-8'))
-            self.wfile.write(b"data: [DONE]\n\n")
-        else:
-            openai_response = {
-                "id": "chatcmpl-" + str(int(time.time())),
-                "object": "chat.completion",
-                "created": int(time.time()),
-                "model": model_name or "agent-model",
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
-                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-            }
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            self.wfile.write(json.dumps(openai_response, ensure_ascii=False).encode('utf-8'))
-    # ===== 🦞 龙虾(OpenClaw)专属区域 结束 🦞 =====
-
     def get_config(self):
         config_path = os.path.join(CONFIG_DIR, "config.json")
-        cfg = {"url": "http://localhost:11434/v1/chat/completions", "key": "", "model": "", "hide_think": True, "ai_name": "", "user_name": "", "lobster_enabled": False}
+        cfg = {"url": "http://localhost:11434/v1/chat/completions", "key": "", "model": "", "hide_think": True, "ai_name": "", "user_name": "", "stream_enabled": False}
         cfg.update(safe_json_read(config_path, {}))
         return cfg
 
     def do_GET(self):
-        # ===== 🦞 龙虾(OpenClaw)专属区域 开始 🦞 =====
-        if self.path in ["/v1/models", "/models"]:
-            self.send_response(200)
-            self.send_header('Content-type', 'application/json; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.end_headers()
-            mock_models = {"object": "list", "data": [{"id": "agent-model", "object": "model", "created": int(time.time()), "owned_by": "custom"}]}
-            self.wfile.write(json.dumps(mock_models).encode('utf-8'))
-            return
-        # ===== 🦞 龙虾(OpenClaw)专属区域 结束 🦞 =====
-
         if self.path == "/":
             self.send_response(200); self.send_header('Content-type', 'text/html; charset=utf-8'); self.end_headers()
-            with open("index.html", "r", encoding="utf-8") as f: self.wfile.write(f.read().encode("utf-8"))
+            with open(_app_path("index.html"), "r", encoding="utf-8") as f: self.wfile.write(f.read().encode("utf-8"))
             return
 
-        elif self.path.startswith("/api/list/"):
-            with global_state_lock:
-                is_online = model_status_cache.get("is_online", False)
-            if is_online:
-                self.send_response(200); self.end_headers()
-            else:
-                self.send_response(503); self.end_headers()
+        elif self.path == "/api/version":
+            self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
+            self.wfile.write(json.dumps({"version": APP_VERSION}).encode('utf-8'))
             return
-            
+
+        elif self.path == "/api/show":
+            try:
+                import ctypes
+                hwnd = ctypes.windll.user32.FindWindowW(None, 'LangAgent')
+                if hwnd:
+                    ctypes.windll.user32.ShowWindow(hwnd, 5)
+                    ctypes.windll.user32.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
+            self.send_response(200); self.end_headers()
+            return
+
         elif self.path.startswith("/api/poll"):
             parsed = urllib.parse.urlparse(self.path)
             qs = urllib.parse.parse_qs(parsed.query)
@@ -404,13 +587,19 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
                     atomic_json_write(sig_file, {"date": today_str, "signature": ai_reply})
                     self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
                     self.wfile.write(json.dumps({"signature": ai_reply}).encode('utf-8'))
-                else: self.send_response(500); self.end_headers()
-            except Exception: self.send_response(500); self.end_headers()
+                else:
+                    # LLM 不可用，复用旧签名（如有）
+                    old = sig_data.get("signature", "")
+                    self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
+                    self.wfile.write(json.dumps({"signature": old}).encode('utf-8'))
+            except Exception:
+                self.send_response(500); self.end_headers()
 
         elif self.path.startswith("/api/read/"):
-            parts = self.path.split("/")
+            clean_path = self.path.split('?')[0]
+            parts = clean_path.split("/")
             folder = urllib.parse.unquote(parts[-2])
-            filename = os.path.basename(urllib.parse.unquote(parts[-1])) 
+            filename = os.path.basename(urllib.parse.unquote(parts[-1]))
             if folder not in ALLOWED_FOLDERS: self.send_response(403); self.end_headers(); return
             file_path = os.path.join(DATA_DIR, folder, filename)
             with file_lock:
@@ -425,132 +614,83 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
         content_length = int(self.headers.get('Content-Length', 0))
         if content_length > 15 * 1024 * 1024: self.send_response(413); self.end_headers(); return
 
-        # ===== 🦞 龙虾(OpenClaw)专属区域 开始 🦞 =====
-        if self.path in ["/v1/chat/completions", "/chat/completions"]:
+        # ===== 微信原生接入端点 =====
+        if self.path.startswith("/api/wechat/") and not WECHAT_AVAILABLE:
+            self.send_response(503); self.end_headers()
+            self.wfile.write(json.dumps({"error": "微信模块未安装"}).encode('utf-8'))
+            return
+
+        if WECHAT_AVAILABLE and self.path == "/api/wechat/status":
+            try:
+                state = wechat_agent.get_state()
+                # 脱敏：不返回 bot_token 完整值
+                if state.get("account", {}).get("bot_token"):
+                    state["account"]["bot_token"] = state["account"]["bot_token"][:12] + "***"
+                self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
+                self.wfile.write(json.dumps(state).encode('utf-8'))
+            except Exception as e:
+                self.send_response(500); self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+            return
+
+        if WECHAT_AVAILABLE and self.path == "/api/wechat/login_start":
+            try:
+                result = wechat_agent.login_start()
+                self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
+                self.wfile.write(json.dumps(result).encode('utf-8'))
+            except Exception as e:
+                self.send_response(500); self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+            return
+
+        if WECHAT_AVAILABLE and self.path == "/api/wechat/login_poll":
+            try:
+                result = wechat_agent.login_poll()
+                self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
+                self.wfile.write(json.dumps(result).encode('utf-8'))
+            except Exception as e:
+                self.send_response(500); self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+            return
+
+
+        if WECHAT_AVAILABLE and self.path == "/api/wechat/login_cancel":
+            try:
+                wechat_agent.login_cancel()
+                self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
+                self.wfile.write(json.dumps({"ok": True}).encode('utf-8'))
+            except Exception as e:
+                self.send_response(500); self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+            return
+
+        if WECHAT_AVAILABLE and self.path == "/api/wechat/unbind":
+            try:
+                wechat_agent.stop()
+                wechat_agent.unbind()
+                self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
+                self.wfile.write(json.dumps({"ok": True}).encode('utf-8'))
+            except Exception as e:
+                self.send_response(500); self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+            return
+
+        if WECHAT_AVAILABLE and self.path == "/api/wechat/toggle":
             try:
                 post_data = json.loads(self.rfile.read(content_length).decode('utf-8'))
-                messages = post_data.get('messages', [])
-                is_stream = post_data.get('stream', False)
-                if not messages: self.send_response(400); self.end_headers(); return
-                
-                cfg = self.get_config()
-                ai_name = cfg.get("ai_name", "AI")
-                user_name = cfg.get("user_name", "用户")
-
-                if not cfg.get("lobster_enabled", False):
-                    print(f"[{time.strftime('%H:%M:%S')}] 拦截: 微信/OpenClaw消息被挂起 (接管开关已关闭)")
-                    blocked_reply = "【系统提示】主人正在专心忙碌，接管模式暂时关闭哦~"
-                    self._send_openai_response(blocked_reply, is_stream, cfg.get('model', ''))
-                    return
-                
-                user_message = ""
-                image_data = None
-                noise_signatures = ["<conversation>", "HEARTBEAT", "openclaw", "workspace", "read_file", "Sender (untrusted metadata)", "TOOL_CALL", "system prompt", "Update the existing structured summary"]
-                
-                for msg in reversed(messages):
-                    if msg.get('role') == 'user':
-                        raw_content = msg.get('content', '')
-                        temp_text = ""
-                        if isinstance(raw_content, list):
-                            for item in raw_content:
-                                if item.get('type') == 'text': temp_text += item.get('text', '')
-                                elif item.get('type') == 'image_url': image_data = item.get('image_url', {}).get('url', '')
-                        else: temp_text = str(raw_content)
-                        
-                        temp_text = temp_text.strip()
-                        is_noise = any(noise in temp_text for noise in noise_signatures)
-                        
-                        if temp_text and not is_noise:
-                            clean_text = re.sub(r'^\[.*?\d{4}-\d{2}-\d{2}.*?\d{2}:\d{2}.*?\]\s*', '', temp_text)
-                            user_message = clean_text
-                            break 
-
-                if not user_message and not image_data:
-                    self._send_openai_response("HEARTBEAT_OK", is_stream, cfg.get('model', ''))
-                    return
-
-                print(f"\n[{time.strftime('%H:%M:%S')}] 📥 [接收消息] {user_name}: {user_message}")
-
-                system_prompt = f"你是{ai_name}。请严格遵循人设与我聊天，永远不要承认自己是AI程序，保持自然的情感。\n\n【基础档案】\n"
-                with file_lock:
-                    profile_path = os.path.join(AGENT_PROFILE_DIR, "人物档案.txt")
-                    if os.path.exists(profile_path):
-                        with open(profile_path, 'r', encoding='utf-8') as f: system_prompt += f.read() + "\n"
-                    user_profile_path = os.path.join(USER_PROFILE_DIR, "用户档案.txt")
-                    if os.path.exists(user_profile_path):
-                        with open(user_profile_path, 'r', encoding='utf-8') as f: 
-                            u_info = f.read().strip()
-                            if u_info: system_prompt += f"\n【{user_name}（我）的档案】\n{u_info}\n"
-                    
-                    summary_file = os.path.join(MEM_DIR, "memory_summary.json")
-                    mem_summary = safe_json_read(summary_file, {})
-                    if mem_summary.get('items'):
-                        system_prompt += "\n【长期记忆日记】(请在对话中自然参考以下过去发生的事情)：\n"
-                        for m in mem_summary['items']: system_prompt += f"- [{m['time']}] {m['content']}\n"
-
-                    history_file = os.path.join(MEM_DIR, "chat_history.json")
-                    chat_history = safe_json_read(history_file, [])
-                
-                msg_content = [{"type": "text", "text": user_message or "看看这张图片"}, {"type": "image_url", "image_url": {"url": image_data}}] if image_data else user_message
-                
-                recent_history = chat_history[-21:] 
-                formatted_history = []
-                for msg in recent_history:
-                    api_role = "assistant" if msg["role"] == "agent" else msg["role"]
-                    formatted_history.append({"role": api_role, "content": msg["content"]})
-                
-                if formatted_history and formatted_history[0]["role"] == "assistant":
-                    formatted_history.insert(0, {"role": "user", "content": "（继续之前的对话）"})
-                
-                llm_messages = []
-                if formatted_history:
-                    formatted_history[0]["content"] = system_prompt + "\n\n" + formatted_history[0]["content"]
-                    llm_messages.extend(formatted_history)
-                    llm_messages.append({"role": "user", "content": msg_content})
+                enable = post_data.get('enable', False)
+                if enable:
+                    ok = wechat_agent.start(handle_wechat_message)
                 else:
-                    if isinstance(msg_content, str): msg_content = system_prompt + "\n\n" + msg_content
-                    else: msg_content[0]["text"] = system_prompt + "\n\n" + msg_content[0]["text"]
-                    llm_messages.append({"role": "user", "content": msg_content})
-
-                ai_reply = call_llm_with_circuit_breaker(cfg, llm_messages, use_fallback=True)
-                if not ai_reply: ai_reply = "（网络卡卡的，能再说一遍嘛？）"
-
-                parts = [p.strip() for p in re.split(r'(?<=[。！？!?\n])', ai_reply) if p.strip()]
-                if not parts: parts = [ai_reply]
-
-                print(f"[{time.strftime('%H:%M:%S')}] 📤 [{ai_name}回复] {ai_reply}\n")
-
-                start_summary_thread = False
-                to_summarize = []
-                with file_lock:
-                    safe_chat_history = safe_json_read(history_file, [])
-                    safe_chat_history.append({"role": "user", "content": user_message or "[发送了一张图片]", "time": time.strftime("%Y-%m-%d %H:%M:%S")})
-                    for p in parts:
-                        safe_chat_history.append({"role": "agent", "content": p, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
-
-                    if len(safe_chat_history) >= 22:
-                        to_summarize = safe_chat_history[:20]
-                        safe_chat_history = safe_chat_history[20:]
-                        start_summary_thread = True
-                        
-                    atomic_json_write(history_file, safe_chat_history)
-
-                clean_reply = ''.join(parts)
-                self._send_openai_response(clean_reply, is_stream, cfg.get('model', ''))
-
-                if start_summary_thread:
-                    threading.Thread(target=auto_summarize_memory, args=(cfg, to_summarize)).start()
-                update_interaction_time(cfg)
-
+                    ok = wechat_agent.stop() or True
+                self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
+                self.wfile.write(json.dumps({"ok": ok, "running": wechat_agent.get_state()["running"]}).encode('utf-8'))
             except Exception as e:
-                self.send_response(500)
-                self.send_header('Access-Control-Allow-Origin', '*')
-                self.end_headers()
-                error_response = {"error": {"message": str(e), "type": "server_error"}}
-                self.wfile.write(json.dumps(error_response).encode('utf-8'))
+                self.send_response(500); self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
             return
-        # ===== 🦞 龙虾(OpenClaw)专属区域 结束 🦞 =====
-            
+        # ===== 微信端点结束 =====
+
         if self.path == "/api/save":
             try:
                 post_data = json.loads(self.rfile.read(content_length).decode('utf-8'))
@@ -616,14 +756,42 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/api/get_models":
             try:
                 post_data = json.loads(self.rfile.read(content_length).decode('utf-8'))
-                url = post_data.get('url', '').replace('/chat/completions', '/models') if '/chat/completions' in post_data.get('url', '') else post_data.get('url', '').rstrip('/') + '/models'
-                req = urllib.request.Request(url, method='GET')
-                if post_data.get('key', '').strip(): req.add_header('Authorization', f'Bearer {post_data.get("key")}')
-                response = urllib.request.urlopen(req, timeout=8)
-                model_names = [m['id'] for m in json.loads(response.read().decode('utf-8')).get('data', [])]
-                self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
-                self.wfile.write(json.dumps({"models": model_names, "status": "ok"}).encode('utf-8'))
-            except Exception as e: self.send_response(500); self.end_headers(); self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+                url = post_data.get('url', '')
+                key = post_data.get('key', '')
+                model_names = []
+                status = "ok"
+                # 尝试 OpenAI 兼容 /v1/models
+                try:
+                    models_url = url.replace('/chat/completions', '/models') if '/chat/completions' in url else url.rstrip('/') + '/models'
+                    req = urllib.request.Request(models_url, method='GET')
+                    if key.strip(): req.add_header('Authorization', f'Bearer {key}')
+                    resp = urllib.request.urlopen(req, timeout=5)
+                    model_names = [m['id'] for m in json.loads(resp.read().decode('utf-8')).get('data', [])]
+                except Exception:
+                    pass
+                # 尝试 Ollama /api/tags（仅本地地址）
+                if not model_names and ('localhost' in url or '127.0.0.1' in url or '11434' in url):
+                    try:
+                        base = '/'.join(url.split('/')[:3])
+                        req = urllib.request.Request(f"{base}/api/tags", method='GET')
+                        resp = urllib.request.urlopen(req, timeout=5)
+                        model_names = [m['name'] for m in json.loads(resp.read().decode('utf-8')).get('models', [])]
+                    except Exception:
+                        pass
+                # 都没拿到则用已填写的模型名作为兜底
+                if not model_names:
+                    manual = post_data.get('model', '').strip()
+                    if manual:
+                        model_names = [manual]
+                        status = "fallback"
+                if model_names:
+                    self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
+                    self.wfile.write(json.dumps({"models": model_names, "status": status}).encode('utf-8'))
+                else:
+                    raise Exception("无法获取模型列表，请手动输入")
+            except Exception as e:
+                self.send_response(500); self.end_headers()
+                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
 
         elif self.path == "/api/chat":
             try:
@@ -677,8 +845,89 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
                     else: msg_content[0]["text"] = system_prompt + "\n\n" + msg_content[0]["text"]
                     llm_messages.append({"role": "user", "content": msg_content})
 
+                stream_mode = post_data.get('stream') and cfg.get('stream_enabled', False)
+
+                if stream_mode:
+                    self.send_response(200)
+                    self.send_header('Content-type', 'text/event-stream; charset=utf-8')
+                    self.send_header('Cache-Control', 'no-cache')
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.end_headers()
+
+                    parts = []
+                    buf = ""
+                    try:
+                        for token in call_llm_stream(cfg, llm_messages):
+                            if token is None: break
+                            buf += token
+                            while True:
+                                m = re.search(r'[。！？!?\n]', buf)
+                                if not m: break
+                                end = m.end()
+                                sentence = buf[:end].strip()
+                                buf = buf[end:]
+                                if sentence:
+                                    parts.append(sentence)
+                                    self.wfile.write(f"data: {json.dumps({'type': 'sentence', 'text': sentence}, ensure_ascii=False)}\n\n".encode())
+                                    self.wfile.flush()
+                        if buf.strip():
+                            parts.append(buf.strip())
+                            self.wfile.write(f"data: {json.dumps({'type': 'sentence', 'text': buf.strip()}, ensure_ascii=False)}\n\n".encode())
+                            buf = ""
+                    except Exception:
+                        pass
+                    rejected = False
+                    try:
+                        pass
+                    finally:
+                        if buf.strip():
+                            parts.append(buf.strip())
+                            self.wfile.write(f"data: {json.dumps({'type': 'sentence', 'text': buf.strip()}, ensure_ascii=False)}\n\n".encode())
+                        if not parts:
+                            parts = ["（无言以对）"]
+                            self.wfile.write(f"data: {json.dumps({'type': 'sentence', 'text': '（无言以对）'}, ensure_ascii=False)}\n\n".encode())
+                        full_text = ''.join(parts)
+                        if _is_rejected(full_text):
+                            self.wfile.write(f"data: {json.dumps({'type': 'error', 'message': '消息被云端安全策略拦截，内容未保存。'}, ensure_ascii=False)}\n\n".encode())
+                            rejected = True
+                        self.wfile.write(b"data: {\"type\":\"done\"}\n\n")
+                        self.wfile.flush()
+
+                    if rejected:
+                        return
+
+                    with file_lock:
+                        safe_chat_history = safe_json_read(history_file, [])
+                        safe_chat_history.append({"role": "user", "content": user_message or "[发送了一张图片]", "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+                        for p in parts:
+                            safe_chat_history.append({"role": "agent", "content": p, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+                        if len(safe_chat_history) >= 22:
+                            to_summarize = safe_chat_history[:20]
+                            safe_chat_history = safe_chat_history[20:]
+                            atomic_json_write(history_file, safe_chat_history)
+                            threading.Thread(target=auto_summarize_memory, args=(cfg, to_summarize)).start()
+                        else:
+                            atomic_json_write(history_file, safe_chat_history)
+                    update_interaction_time(cfg)
+                    return
+
                 ai_reply = call_llm_with_circuit_breaker(cfg, llm_messages, use_fallback=True)
-                
+
+                if _is_rejected(ai_reply) or (image_data and ai_reply == "（网络卡卡的，能再说一遍嘛？）"):
+                    err_msg = _last_api_error[:300] if _last_api_error else "云端拒绝，未返回具体原因"
+                    # 尝试从 JSON 错误体中提取 message
+                    try:
+                        err_json = json.loads(err_msg)
+                        err_msg = err_json.get('error', {}).get('message', '') or err_json.get('message', '') or err_msg
+                    except Exception:
+                        pass
+                    self.send_response(400); self.send_header("Content-type", "application/json"); self.end_headers()
+                    self.wfile.write(json.dumps({
+                        "error": "content_rejected",
+                        "message": err_msg
+                    }, ensure_ascii=False).encode("utf-8"))
+                    return
+
                 parts = [p.strip() for p in re.split(r'(?<=[。！？!\?\n])', ai_reply) if p.strip()]
                 if not parts: parts = [ai_reply if ai_reply else "（无言以对）"]
 
@@ -710,9 +959,155 @@ class ThreadingServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
 
 if __name__ == '__main__':
+    # 单实例锁：防止重复启动
+    import socket
+    _lock_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        _lock_sock.bind(('127.0.0.1', PORT + 1))
+    except OSError:
+        # 已有实例在运行，通知它恢复窗口
+        restored = False
+        try:
+            urllib.request.urlopen(f'http://localhost:{PORT}/api/show', timeout=2)
+            restored = True
+        except Exception:
+            pass
+        if not restored:
+            try:
+                webbrowser.open(f'http://localhost:{PORT}')
+            except Exception:
+                pass
+        sys.exit(0)
+
     print(f"============================================================")
     print(f"🚀 安全级 Agent 驱动中枢已启动 [时间衰减+心跳架构+防脏数据]")
     print(f"🌐 正在监听端口 {PORT}")
-    print(f"🔗 OpenClaw 桥接地址: [http://127.0.0.1](http://127.0.0.1):{PORT}/v1")
+    if WECHAT_AVAILABLE:
+        print(f"🔗 微信原生接入模块已就绪")
+        if wechat_agent.load_running_state():
+            if wechat_agent.get_account().get("bot_token"):
+                wechat_agent.start(handle_wechat_message)
+                print(f"[系统] 微信消息服务已自动恢复运行")
+    else:
+        print(f"⚠️ 微信模块不可用，使用纯 Web 终端模式")
     print(f"============================================================\n")
-    ThreadingServer(('localhost', PORT), AgentHandler).serve_forever()
+    if getattr(sys, 'frozen', False):
+        threading.Thread(target=lambda: ThreadingServer(('localhost', PORT), AgentHandler).serve_forever(), daemon=True).start()
+        try:
+            import webview
+            import ctypes
+            from PIL import Image
+
+            _close_mode = {'mode': 'minimize'}
+            _tray_ref = [None]
+
+            class _Api:
+                def setCloseMode(self, val):
+                    _close_mode['mode'] = val
+
+                def openQrWindow(self, url):
+                    qr_win = webview.create_window('微信扫码绑定', url, width=420, height=520,
+                                                    resizable=False, on_top=True)
+                    _api._qr_win = qr_win
+
+                def closeQrWindow(self):
+                    try:
+                        if hasattr(_api, '_qr_win') and _api._qr_win:
+                            _api._qr_win.destroy()
+                            _api._qr_win = None
+                    except Exception:
+                        pass
+
+            _api = _Api()
+
+            def _show_window():
+                global _pywebview_window
+                try:
+                    if _pywebview_window:
+                        _pywebview_window.show()
+                        hwnd = ctypes.windll.user32.FindWindowW(None, 'LangAgent')
+                        if hwnd:
+                            ctypes.windll.user32.SetForegroundWindow(hwnd)
+                except Exception:
+                    pass
+
+            # 注册全局恢复函数，供 /api/show 调用
+            _pywebview_window = None
+            _pywebview_show = _show_window
+
+            def _setup_tray():
+                import pystray
+                icon_img = Image.open(_app_path('app_icon.ico'))
+                menu = pystray.Menu(
+                    pystray.MenuItem('显示窗口', lambda: _show_window(), default=True),
+                    pystray.MenuItem('退出', lambda: _do_exit()),
+                )
+                _tray_ref[0] = pystray.Icon('LangAgent', icon_img, 'LangAgent', menu)
+                threading.Thread(target=_tray_ref[0].run, daemon=True).start()
+
+            def _do_exit():
+                try:
+                    if _tray_ref[0]:
+                        _tray_ref[0].stop()
+                except Exception:
+                    pass
+                os._exit(0)
+
+            # 托盘图标（一直显示）
+            _setup_tray()
+
+            # 窗口状态记忆
+            _win_state_file = os.path.join(DATA_DIR, '_window_state.json')
+            _win_saved = {}
+            if os.path.exists(_win_state_file):
+                try:
+                    with open(_win_state_file, 'r', encoding='utf-8') as f:
+                        _win_saved = json.load(f)
+                except Exception:
+                    pass
+
+            window = webview.create_window('LangAgent', f'http://localhost:{PORT}',
+                                           js_api=_api, width=1100, height=750,
+                                           min_size=(800, 600),
+                                           maximized=_win_saved.get('maximized', True))
+            _pywebview_window = window
+
+            def _save_window_state():
+                try:
+                    hwnd = ctypes.windll.user32.FindWindowW(None, 'LangAgent')
+                    if hwnd:
+                        import ctypes.wintypes
+                        placement = ctypes.create_string_buffer(44)
+                        ctypes.windll.user32.GetWindowPlacement(hwnd, placement)
+                        show_cmd = int.from_bytes(placement[8:12], 'little')
+                        state = {'maximized': show_cmd == 3}
+                        with open(_win_state_file, 'w', encoding='utf-8') as f:
+                            json.dump(state, f)
+                except Exception:
+                    pass
+
+            def _on_closing():
+                _save_window_state()
+                if _close_mode['mode'] == 'silent':
+                    if _tray_ref[0]:
+                        _tray_ref[0].stop()
+                    return True
+                _pywebview_window.hide()
+                return False
+
+            window.events.closing += _on_closing
+            webview.start()
+        except Exception as _e:
+            try:
+                with open(os.path.join(DATA_DIR, 'startup_error.log'), 'a', encoding='utf-8') as _f:
+                    import traceback
+                    _f.write(f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] pywebview init failed:\n{traceback.format_exc()}\n\n')
+            except Exception:
+                pass
+            def _open_browser():
+                time.sleep(1)
+                webbrowser.open(f'http://localhost:{PORT}')
+            threading.Thread(target=_open_browser, daemon=True).start()
+            ThreadingServer(('localhost', PORT), AgentHandler).serve_forever()
+    else:
+        ThreadingServer(('localhost', PORT), AgentHandler).serve_forever()
