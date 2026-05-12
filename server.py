@@ -46,9 +46,7 @@ if getattr(sys, 'frozen', False):
 else:
     _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# 原生窗口引用（供 /api/show 恢复窗口）
 _pywebview_window = None
-_pywebview_show = None
 
 def _app_path(rel_path):
     """优先用外部文件（支持热更新），不存在则用打包内资源。"""
@@ -59,7 +57,7 @@ def _app_path(rel_path):
     return bundled
 
 PORT = 5622
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.7"
 # 打包后 Program Files 无写权限，数据存用户目录
 if getattr(sys, 'frozen', False):
     DATA_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'LangAgent')
@@ -142,24 +140,82 @@ def get_decay_score(item):
     half_life = 24.0 * (2.0 ** ((imp - 1.0) / 2.0))
     return round(imp * (2.0 ** (-hours_elapsed / half_life)), 2)
 
-MULTIMODAL_KW = ['vision', 'vl', 'gpt-4o', 'gpt-4', 'claude', 'gemini',
-                 'glm-4v', 'qwen-vl', 'multimodal', 'omni', 'llava',
-                 'cogvlm', 'minicpm-v', 'internvl', 'yi-vision']
-
-def _is_multimodal(model_name):
-    if not model_name:
-        return False
-    return any(kw in model_name.lower() for kw in MULTIMODAL_KW)
-
 CONTENT_REJECT_KW = ['content_filter', '内容安全', '违规', 'safety system',
                      'content policy', 'content management', '无法处理该请求']
+
+_MODEL_ERR = '__MODEL_ERROR__'
 
 def _is_rejected(reply_text):
     if not reply_text:
         return False
     return any(kw in reply_text.lower() for kw in CONTENT_REJECT_KW)
 
-_last_api_error = ""
+_conn_status = "connecting"
+
+def build_chat_context(cfg):
+    """构建聊天上下文（人设 + 档案 + 记忆 + 历史），返回 (system_prompt, history, history_file)。"""
+    ai_name = cfg.get("ai_name", "AI")
+    user_name = cfg.get("user_name", "用户")
+    system_prompt = f"你是{ai_name}。请严格遵循人设与我聊天，永远不要承认自己是AI程序，保持自然的情感。\n\n【基础档案】\n"
+
+    with file_lock:
+        profile_path = os.path.join(AGENT_PROFILE_DIR, "人物档案.txt")
+        if os.path.exists(profile_path):
+            with open(profile_path, 'r', encoding='utf-8') as f:
+                system_prompt += f.read() + "\n"
+
+        user_profile_path = os.path.join(USER_PROFILE_DIR, "用户档案.txt")
+        if os.path.exists(user_profile_path):
+            with open(user_profile_path, 'r', encoding='utf-8') as f:
+                u_info = f.read().strip()
+                if u_info:
+                    system_prompt += f"\n【{user_name}（我）的档案】\n{u_info}\n"
+
+        summary_file = os.path.join(MEM_DIR, "memory_summary.json")
+        mem_summary = safe_json_read(summary_file, {})
+        if mem_summary.get('items'):
+            system_prompt += "\n【长期记忆日记】\n"
+            for m in mem_summary['items']:
+                system_prompt += f"- [{m['time']}] {m['content']}\n"
+
+        history_file = os.path.join(MEM_DIR, "chat_history.json")
+        chat_history = safe_json_read(history_file, [])
+
+    return system_prompt, chat_history, history_file
+
+
+def build_llm_messages(system_prompt, chat_history, user_msg):
+    """用上下文和用户消息构建 LLM 消息列表。"""
+    recent = chat_history[-21:]
+    formatted = []
+    for m in recent:
+        role = "assistant" if m["role"] == "agent" else m["role"]
+        formatted.append({"role": role, "content": m["content"]})
+    if formatted and formatted[0]["role"] == "assistant":
+        formatted.insert(0, {"role": "user", "content": "（继续之前的对话）"})
+
+    llm_msgs = []
+    if formatted:
+        formatted[0]["content"] = system_prompt + "\n\n" + formatted[0]["content"]
+        llm_msgs.extend(formatted)
+        llm_msgs.append({"role": "user", "content": user_msg})
+    else:
+        if isinstance(user_msg, str):
+            user_msg = system_prompt + "\n\n" + user_msg
+        else:
+            user_msg[0]["text"] = system_prompt + "\n\n" + user_msg[0]["text"]
+        llm_msgs.append({"role": "user", "content": user_msg})
+
+    return llm_msgs
+
+def get_conn_status():
+    return _conn_status
+
+def _set_conn_status(s):
+    global _conn_status
+    if _conn_status != s:
+        _conn_status = s
+        print(f"[{time.strftime('%H:%M:%S')}] 🔌 [状态] {s}")
 
 def call_llm_with_circuit_breaker(cfg, messages, use_fallback=True):
     global api_cooldown_until, consecutive_failures, _last_api_error
@@ -167,7 +223,7 @@ def call_llm_with_circuit_breaker(cfg, messages, use_fallback=True):
     with global_state_lock: cooldown_time = api_cooldown_until
 
     if time.time() < cooldown_time:
-        return "（网络卡卡的，能再说一遍嘛？）" if use_fallback else None
+        return _MODEL_ERR if use_fallback else None
 
     payload = {"model": cfg['model'], "messages": messages, "stream": False}
     req = urllib.request.Request(cfg['url'], data=json.dumps(payload).encode('utf-8'), method='POST')
@@ -184,6 +240,7 @@ def call_llm_with_circuit_breaker(cfg, messages, use_fallback=True):
 
             with global_state_lock: consecutive_failures = 0
             _last_api_error = ""
+            _set_conn_status("online")
             return reply
         except Exception as ex:
             _last_api_error = str(ex)[:300]
@@ -200,8 +257,9 @@ def call_llm_with_circuit_breaker(cfg, messages, use_fallback=True):
         consecutive_failures += 1
         if consecutive_failures >= 3:
             api_cooldown_until = time.time() + 60
-            
-    return "（网络卡卡的，能再说一遍嘛？）" if use_fallback else None
+
+    _set_conn_status("offline")
+    return _MODEL_ERR if use_fallback else None
 
 def call_llm_stream(cfg, messages):
     """流式调用 LLM，逐 token yield 文本增量。连接失败时 yield None。"""
@@ -244,11 +302,13 @@ def call_llm_stream(cfg, messages):
                     yield delta
             except: pass
         with global_state_lock: consecutive_failures = 0
+        _set_conn_status("online")
     except Exception:
         with global_state_lock:
             consecutive_failures += 1
             if consecutive_failures >= 3:
                 api_cooldown_until = time.time() + 60
+                _set_conn_status("offline")
         yield None
 
 def auto_summarize_memory(cfg, recent_history):
@@ -401,16 +461,7 @@ def memory_decay_cleaner():
 
 threading.Thread(target=memory_decay_cleaner, daemon=True).start()
 
-def _wx_log(msg):
-    try:
-        log_file = os.path.join(DATA_DIR, 'wechat_debug.log')
-        with open(log_file, 'a', encoding='utf-8') as f:
-            f.write(f'[{time.strftime("%Y-%m-%d %H:%M:%S")}] {msg}\n')
-    except Exception:
-        pass
-
 def handle_wechat_message(msg, account):
-    """收到微信消息时的回调：通过 LLM 生成回复并发送。"""
     try:
         item_list = msg.get("msg", {}).get("item_list", msg.get("item_list", []))
         user_text = ""
@@ -419,84 +470,47 @@ def handle_wechat_message(msg, account):
                 ti = item.get("text_item", {})
                 user_text += ti.get("text", ti.get("content", ""))
         if not user_text.strip():
-            _wx_log('empty text, skip')
             return
         from_user = msg.get("msg", {}).get("from_user_id", msg.get("from_user_id", ""))
         if not from_user:
-            _wx_log('no from_user, skip')
             return
         context_token = msg.get("msg", {}).get("context_token", msg.get("context_token", ""))
-        _wx_log(f'RECV from={from_user[:30]} text={user_text[:80]}')
         print(f"[{time.strftime('%H:%M:%S')}] 📥 [微信] {from_user[:20]}...: {user_text[:50]}")
 
-        cfg_path = os.path.join(CONFIG_DIR, "config.json")
-        cfg = safe_json_read(cfg_path, {})
-        ai_name = cfg.get("ai_name", "AI")
-        user_name = cfg.get("user_name", "用户")
-        system_prompt = f"你是{ai_name}。请严格遵循人设与我聊天，永远不要承认自己是AI程序，保持自然的情感。\n\n【基础档案】\n"
-        with file_lock:
-            profile_path = os.path.join(AGENT_PROFILE_DIR, "人物档案.txt")
-            if os.path.exists(profile_path):
-                with open(profile_path, 'r', encoding='utf-8') as f: system_prompt += f.read() + "\n"
-            user_profile_path = os.path.join(USER_PROFILE_DIR, "用户档案.txt")
-            if os.path.exists(user_profile_path):
-                with open(user_profile_path, 'r', encoding='utf-8') as f:
-                    u_info = f.read().strip()
-                    if u_info: system_prompt += f"\n【{user_name}（我）的档案】\n{u_info}\n"
-            summary_file = os.path.join(MEM_DIR, "memory_summary.json")
-            mem_summary = safe_json_read(summary_file, {})
-            if mem_summary.get('items'):
-                system_prompt += "\n【长期记忆日记】\n"
-                for m in mem_summary['items']: system_prompt += f"- [{m['time']}] {m['content']}\n"
-            history_file = os.path.join(MEM_DIR, "chat_history.json")
-            chat_history = safe_json_read(history_file, [])
-
-        recent_history = chat_history[-21:]
-        formatted_history = []
-        for m in recent_history:
-            role = "assistant" if m["role"] == "agent" else m["role"]
-            formatted_history.append({"role": role, "content": m["content"]})
-        if formatted_history and formatted_history[0]["role"] == "assistant":
-            formatted_history.insert(0, {"role": "user", "content": "（继续之前的对话）"})
-
-        llm_messages = []
-        if formatted_history:
-            formatted_history[0]["content"] = system_prompt + "\n\n" + formatted_history[0]["content"]
-            llm_messages.extend(formatted_history)
-            llm_messages.append({"role": "user", "content": user_text})
-        else:
-            llm_messages.append({"role": "user", "content": system_prompt + "\n\n" + user_text})
+        cfg = safe_json_read(os.path.join(CONFIG_DIR, "config.json"), {})
+        system_prompt, chat_history, history_file = build_chat_context(cfg)
+        llm_messages = build_llm_messages(system_prompt, chat_history, user_text)
 
         ai_reply = call_llm_with_circuit_breaker(cfg, llm_messages, use_fallback=True)
-        if not ai_reply: ai_reply = "（网络卡卡的，能再说一遍嘛？）"
-        _wx_log(f'LLM reply len={len(ai_reply)} text={ai_reply[:80]}')
+        if not ai_reply or ai_reply.strip() == _MODEL_ERR:
+            return
 
         parts = [p.strip() for p in re.split(r'(?<=[。！？!?\n])', ai_reply) if p.strip()]
         if not parts: parts = [ai_reply]
         clean_reply = ''.join(parts)
 
+        start_summary = False
+        to_summarize = []
         with file_lock:
-            safe_chat_history = safe_json_read(history_file, [])
-            safe_chat_history.append({"role": "user", "content": user_text, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+            safe_chat = safe_json_read(history_file, [])
+            safe_chat.append({"role": "user", "content": user_text, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
             for p in parts:
-                safe_chat_history.append({"role": "agent", "content": p, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
-            if len(safe_chat_history) >= 22:
-                to_summarize = safe_chat_history[:20]
-                safe_chat_history = safe_chat_history[20:]
-                atomic_json_write(history_file, safe_chat_history)
-                threading.Thread(target=auto_summarize_memory, args=(cfg, to_summarize)).start()
-            else:
-                atomic_json_write(history_file, safe_chat_history)
+                safe_chat.append({"role": "agent", "content": p, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+            if len(safe_chat) >= 22:
+                to_summarize = safe_chat[:20]
+                safe_chat = safe_chat[20:]
+                start_summary = True
+            atomic_json_write(history_file, safe_chat)
 
         update_interaction_time(cfg)
+
+        if start_summary:
+            threading.Thread(target=auto_summarize_memory, args=(cfg, to_summarize)).start()
+
         if clean_reply.strip():
-            ok = wechat_agent.send_message(from_user, clean_reply, account, context_token)
-            _wx_log(f'SEND ok={ok} reply={clean_reply[:60]}')
-        else:
-            _wx_log('SEND skipped: empty clean_reply')
+            wechat_agent.send_message(from_user, clean_reply, account, context_token)
         print(f"[{time.strftime('%H:%M:%S')}] 💬 [微信] 回复: {clean_reply[:40]}")
     except Exception as e:
-        _wx_log(f'EXCEPTION: {str(e)[:200]}')
         print(f"[{time.strftime('%H:%M:%S')}] ⚠️ [微信] 异常: {str(e)[:150]}")
 class AgentHandler(http.server.BaseHTTPRequestHandler):
 
@@ -522,6 +536,11 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
         elif self.path == "/api/version":
             self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
             self.wfile.write(json.dumps({"version": APP_VERSION}).encode('utf-8'))
+            return
+
+        elif self.path == "/api/status":
+            self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
+            self.wfile.write(json.dumps({"status": get_conn_status()}).encode('utf-8'))
             return
 
         elif self.path == "/api/show":
@@ -566,6 +585,10 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
 
         elif self.path == "/api/signature":
             try:
+                if get_conn_status() != "online":
+                    self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
+                    self.wfile.write(json.dumps({"signature": ""}).encode('utf-8'))
+                    return
                 cfg = self.get_config()
                 if not cfg.get("ai_name"): self.send_response(400); self.end_headers(); return
 
@@ -797,53 +820,14 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
             try:
                 cfg = self.get_config()
                 update_interaction_time(cfg)
-                
+
                 post_data = json.loads(self.rfile.read(content_length).decode('utf-8'))
                 user_message = post_data.get('message')
                 image_data = post_data.get('image')
 
-                ai_name = cfg.get("ai_name", "AI")
-                user_name = cfg.get("user_name", "用户")
-                system_prompt = f"你是{ai_name}。请严格遵循人设与我聊天，永远不要承认自己是AI程序，保持自然的情感。\n\n【基础档案】\n"
-                
-                with file_lock:
-                    profile_path = os.path.join(AGENT_PROFILE_DIR, "人物档案.txt")
-                    if os.path.exists(profile_path):
-                        with open(profile_path, 'r', encoding='utf-8') as f: system_prompt += f.read() + "\n"
-                    user_profile_path = os.path.join(USER_PROFILE_DIR, "用户档案.txt")
-                    if os.path.exists(user_profile_path):
-                        with open(user_profile_path, 'r', encoding='utf-8') as f: 
-                            u_info = f.read().strip()
-                            if u_info: system_prompt += f"\n【{user_name}（我）的档案】\n{u_info}\n"
-                    
-                    summary_file = os.path.join(MEM_DIR, "memory_summary.json")
-                    mem_summary = safe_json_read(summary_file, {})
-                    if mem_summary.get('items'):
-                        system_prompt += "\n【长期记忆日记】(请在对话中自然参考以下过去发生的事情)：\n"
-                        for m in mem_summary['items']: system_prompt += f"- [{m['time']}] {m['content']}\n"
-
-                    history_file = os.path.join(MEM_DIR, "chat_history.json")
-                    chat_history = safe_json_read(history_file, [])
-                
+                system_prompt, chat_history, history_file = build_chat_context(cfg)
                 msg_content = [{"type": "text", "text": user_message or "看看这张图片"}, {"type": "image_url", "image_url": {"url": image_data}}] if image_data else user_message
-                recent_history = chat_history[-21:] 
-                formatted_history = []
-                for msg in recent_history:
-                    api_role = "assistant" if msg["role"] == "agent" else msg["role"]
-                    formatted_history.append({"role": api_role, "content": msg["content"]})
-                
-                if formatted_history and formatted_history[0]["role"] == "assistant":
-                    formatted_history.insert(0, {"role": "user", "content": "（继续之前的对话）"})
-                
-                llm_messages = []
-                if formatted_history:
-                    formatted_history[0]["content"] = system_prompt + "\n\n" + formatted_history[0]["content"]
-                    llm_messages.extend(formatted_history)
-                    llm_messages.append({"role": "user", "content": msg_content})
-                else:
-                    if isinstance(msg_content, str): msg_content = system_prompt + "\n\n" + msg_content
-                    else: msg_content[0]["text"] = system_prompt + "\n\n" + msg_content[0]["text"]
-                    llm_messages.append({"role": "user", "content": msg_content})
+                llm_messages = build_llm_messages(system_prompt, chat_history, msg_content)
 
                 stream_mode = post_data.get('stream') and cfg.get('stream_enabled', False)
 
@@ -884,11 +868,13 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
                             parts.append(buf.strip())
                             self.wfile.write(f"data: {json.dumps({'type': 'sentence', 'text': buf.strip()}, ensure_ascii=False)}\n\n".encode())
                         if not parts:
-                            parts = ["（无言以对）"]
-                            self.wfile.write(f"data: {json.dumps({'type': 'sentence', 'text': '（无言以对）'}, ensure_ascii=False)}\n\n".encode())
+                            self.wfile.write(f"data: {json.dumps({'type': 'error', 'message': '请求失败，请检查模型配置是否正确'}, ensure_ascii=False)}\n\n".encode())
+                            self.wfile.write(b"data: {\"type\":\"done\"}\n\n")
+                            self.wfile.flush()
+                            return
                         full_text = ''.join(parts)
                         if _is_rejected(full_text):
-                            self.wfile.write(f"data: {json.dumps({'type': 'error', 'message': '消息被云端安全策略拦截，内容未保存。'}, ensure_ascii=False)}\n\n".encode())
+                            self.wfile.write(f"data: {json.dumps({'type': 'error', 'message': '请求失败，请检查模型配置是否正确'}, ensure_ascii=False)}\n\n".encode())
                             rejected = True
                         self.wfile.write(b"data: {\"type\":\"done\"}\n\n")
                         self.wfile.flush()
@@ -913,23 +899,18 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
 
                 ai_reply = call_llm_with_circuit_breaker(cfg, llm_messages, use_fallback=True)
 
-                if _is_rejected(ai_reply) or (image_data and ai_reply == "（网络卡卡的，能再说一遍嘛？）"):
-                    err_msg = _last_api_error[:300] if _last_api_error else "云端拒绝，未返回具体原因"
-                    # 尝试从 JSON 错误体中提取 message
-                    try:
-                        err_json = json.loads(err_msg)
-                        err_msg = err_json.get('error', {}).get('message', '') or err_json.get('message', '') or err_msg
-                    except Exception:
-                        pass
+                _model_failed = ai_reply.strip() == _MODEL_ERR
+                if _is_rejected(ai_reply) or _model_failed:
+                    msg = "模型请求失败，请检查模型配置是否正确" if _model_failed else "消息被云端安全策略拦截，请勿发送违规内容"
                     self.send_response(400); self.send_header("Content-type", "application/json"); self.end_headers()
                     self.wfile.write(json.dumps({
                         "error": "content_rejected",
-                        "message": err_msg
+                        "message": msg
                     }, ensure_ascii=False).encode("utf-8"))
                     return
 
                 parts = [p.strip() for p in re.split(r'(?<=[。！？!\?\n])', ai_reply) if p.strip()]
-                if not parts: parts = [ai_reply if ai_reply else "（无言以对）"]
+                if not parts: parts = [ai_reply if ai_reply else _MODEL_ERR]
 
                 start_summary_thread = False
                 to_summarize = []
@@ -1006,8 +987,13 @@ if __name__ == '__main__':
                     _close_mode['mode'] = val
 
                 def openQrWindow(self, url):
-                    qr_win = webview.create_window('微信扫码绑定', url, width=420, height=520,
-                                                    resizable=False, on_top=True)
+                    # 居中显示
+                    sw = ctypes.windll.user32.GetSystemMetrics(0)
+                    sh = ctypes.windll.user32.GetSystemMetrics(1)
+                    w, h = 420, 520
+                    x, y = sw - w - 40, (sh - h) // 2
+                    qr_win = webview.create_window('微信扫码绑定', url, width=w, height=h,
+                                                    x=x, y=y, resizable=False, on_top=True)
                     _api._qr_win = qr_win
 
                 def closeQrWindow(self):
@@ -1030,10 +1016,6 @@ if __name__ == '__main__':
                             ctypes.windll.user32.SetForegroundWindow(hwnd)
                 except Exception:
                     pass
-
-            # 注册全局恢复函数，供 /api/show 调用
-            _pywebview_window = None
-            _pywebview_show = _show_window
 
             def _setup_tray():
                 import pystray

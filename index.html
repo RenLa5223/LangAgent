@@ -49,6 +49,8 @@
         .head-conn-dot { width: 8px; height: 8px; border-radius: 50%; background: #ccc; flex-shrink: 0;}
         .head-conn-dot.green { background: #52b788; box-shadow: 0 0 5px rgba(82, 183, 136, 0.6); }
         .head-conn-dot.red { background: #e07a5f; }
+        @keyframes connPulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+        .head-conn-dot.pulse { animation: connPulse 1.5s infinite; background: #d4a373; }
 
         .chat-flow { flex: 1; padding: 20px; overflow-y: auto; display: flex; flex-direction: column; gap: 20px; scroll-behavior: smooth; }
         .msg-row { display: flex; align-items: flex-start; gap: 15px; max-width: 85%; animation: fadeIn 0.3s ease; }
@@ -488,7 +490,7 @@
                         <div id="wechat-unbound" style="display:none; background: #fff; padding: 30px; border-radius: 15px; box-shadow: var(--shadow-soft); text-align: center;">
                             <p style="font-size:1.1rem;color:var(--text-main);margin-bottom:8px;"><strong>💬 微信原生接入</strong></p>
                             <p style="color:var(--text-sub);margin-bottom:20px;">通过微信 Bot API 直接收发消息，无需任何第三方依赖</p>
-                            <button class="icon-btn" style="background:#52b788;color:#fff;padding:12px 30px;font-size:1rem;" onclick="wechatStartLogin()">📱 开始扫码绑定</button>
+                            <button class="icon-btn" style="background:#52b788;color:#fff;padding:12px 30px;font-size:1rem;display:inline-flex;margin:0 auto;" onclick="wechatStartLogin()">📱 开始扫码绑定</button>
                         </div>
                         <!-- 扫码中 -->
                         <div id="wechat-logging" style="display:none; background: #fff; padding: 30px; border-radius: 15px; box-shadow: var(--shadow-soft); text-align: center;">
@@ -496,7 +498,7 @@
                             <p style="color:var(--text-sub);margin-bottom:10px;">请使用微信扫描网页中的二维码完成绑定</p>
                             <p style="margin-bottom:10px;"><a id="wechat-qr-link" href="#" onclick="event.preventDefault(); openQrUrl(this.href);" style="color:var(--primary-color);font-size:0.9rem;">如未自动弹出，点此手动打开</a></p>
                             <p id="wechat-qr-status" style="color:#52b788;margin-bottom:10px;">等待扫码中...</p>
-                            <button class="icon-btn" style="background:#e07a5f;color:#fff;" onclick="wechatCancelLogin()">取消绑定</button>
+                            <button class="icon-btn" style="background:#e07a5f;color:#fff;display:inline-flex;margin:0 auto;" onclick="wechatCancelLogin()">取消绑定</button>
                         </div>
                         <!-- 已绑定 -->
                         <div id="wechat-bound" style="display:none; flex-direction: column; gap: 15px;">
@@ -712,7 +714,7 @@
                 
                 res = await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: '人物档案', filename: '人物档案.txt', content: `姓名：${ai_name}\n核心性格：请在这里描写${ai_name}的人设...` }) });
                 res = await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: '用户档案', filename: '用户档案.txt', content: `姓名：${user_name}\n特征：请在这里描写关于你的基础信息...` }) });
-                res = await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: '人物内心', filename: '人物内心.txt', content: `[系统初始化] 这是 ${ai_name} 专门用来记录关于 ${user_name} 各种情报的私密笔记本...\n` }) });
+                res = await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: '人物内心', filename: '人物内心.txt', content: `[系统初始化] 此文件由 AI 自动维护，记录从对话中提取的用户情报。无需手动编辑。\n` }) });
 
                 startApp();
             } catch(e) { showToast('初始化异常: ' + e.message); }
@@ -741,10 +743,26 @@
             else if (viewName === 'manage' && currentModuleName) loadModule(currentModuleName, currentModuleType);
         }
 
-        // 连接指示灯：页面加载成功即在线，不再轮询
-        document.getElementById('head-conn-dot').className = 'head-conn-dot green';
-        document.getElementById('head-conn-text').innerText = '在线';
-        document.getElementById('head-conn-text').style.color = '#52b788';
+        // 连接指示灯：定时检测模型状态
+        const _connMap = {
+            'connecting': {cls:'head-conn-dot pulse', color:'#d4a373', text:'连接中'},
+            'online':     {cls:'head-conn-dot green', color:'#52b788', text:'在线'},
+            'offline':    {cls:'head-conn-dot red', color:'#e07a5f', text:'离线'},
+        };
+        async function _refreshConnStatus() {
+            try {
+                const r = await fetch('/api/status');
+                if (r.ok) {
+                    const d = await r.json();
+                    const s = _connMap[d.status] || _connMap['connecting'];
+                    document.getElementById('head-conn-dot').className = s.cls;
+                    document.getElementById('head-conn-text').innerText = s.text;
+                    document.getElementById('head-conn-text').style.color = s.color;
+                }
+            } catch(e) {}
+        }
+        _refreshConnStatus();
+        setInterval(_refreshConnStatus, 5000);
 
         // ===== 关闭行为 =====
         let closeBehavior = 'minimize';
@@ -1169,9 +1187,10 @@
                     } else {
                         // 图片相关错误：弹窗告知，不写入聊天历史，移除已显示的发送气泡
                         if (data.error === 'content_rejected') {
-                            showToast(data.message || '发送失败');
+                            showToast(data.message || '请求失败，请检查模型配置');
                             const chatBox = document.getElementById('chat-box');
-                            if (chatBox.lastChild) chatBox.removeChild(chatBox.lastChild);
+                            if (chatBox.lastChild && chatBox.lastChild.classList.contains('user'))
+                                chatBox.removeChild(chatBox.lastChild);
                             localMsgCount -= 1;
                         } else {
                             await renderReplyParts(['【报错】: ' + (data.message || data.error || '未知错误')]);
