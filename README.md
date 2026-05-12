@@ -12,7 +12,18 @@
 - **主题切换** — 5 套配色可选
 - **桌面打包** — PyInstaller + Inno Setup，生成原生 Windows 安装程序
 
-## 快速开始
+## 下载安装（普通用户）
+
+不需要 Python 环境，直接装就能用。
+
+1. 打开 [Releases](../../releases) 页面
+2. 下载最新版 `LangAgent_Setup_vx.x.x.exe`
+3. 双击安装 → 选择安装路径 → 完成
+4. 桌面/开始菜单启动，浏览器打开 `http://localhost:5622` 进入终端
+
+卸载：Windows 设置 → 应用 → 找到 LangAgent → 卸载。
+
+## 从源码运行（开发者）
 
 ```bash
 pip install -r requirements.txt
