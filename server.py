@@ -57,7 +57,7 @@ def _app_path(rel_path):
     return bundled
 
 PORT = 5622
-APP_VERSION = "1.0.8"
+APP_VERSION = "1.0.9"
 # 打包后 Program Files 无写权限，数据存用户目录
 if getattr(sys, 'frozen', False):
     DATA_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'LangAgent')
@@ -95,24 +95,25 @@ def update_interaction_time(cfg):
 def safe_json_read(filepath, default_val):
     if not os.path.exists(filepath):
         return default_val
-    content = ""
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f: content = f.read()
-    except UnicodeDecodeError:
+    with file_lock:
+        content = ""
         try:
-            with open(filepath, 'r', encoding='gbk') as f: content = f.read()
-        except: pass
-    except Exception: pass
+            with open(filepath, 'r', encoding='utf-8') as f: content = f.read()
+        except UnicodeDecodeError:
+            try:
+                with open(filepath, 'r', encoding='gbk') as f: content = f.read()
+            except: pass
+        except Exception: pass
 
-    if not content.strip(): return default_val
+        if not content.strip(): return default_val
 
-    try:
-        return json.loads(content)
-    except json.JSONDecodeError:
-        corrupted_path = f"{filepath}.corrupted_{int(time.time())}"
-        os.rename(filepath, corrupted_path)
-        print(f"⚠️ [系统降级] 检测到损坏数据，已隔离并重新初始化: {filepath}")
-        return default_val
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            corrupted_path = f"{filepath}.corrupted_{int(time.time())}"
+            os.rename(filepath, corrupted_path)
+            print(f"⚠️ [系统降级] 检测到损坏数据，已隔离并重新初始化: {filepath}")
+            return default_val
 
 def atomic_json_write(filepath, data):
     with file_lock:
@@ -149,6 +150,19 @@ def _is_rejected(reply_text):
     if not reply_text:
         return False
     return any(kw in reply_text.lower() for kw in CONTENT_REJECT_KW)
+
+def _strip_think(text):
+    """去除 <｜end▁of▁thinking｜><｜end▁of▁thinking｜><｜end▁of▁thinking｜> 思考内容，返回纯正文。聊天记录只存正文。"""
+    return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
+def _split_think(text):
+    """分离思考内容和正文，返回 (think_parts, main_text)。"""
+    thinks = []
+    main = text
+    for m in re.finditer(r'<think>(.*?)</think>', text, re.DOTALL):
+        thinks.append(m.group(1).strip())
+    main = _strip_think(text)
+    return thinks, main
 
 _conn_status = "connecting"
 
@@ -218,13 +232,14 @@ def _set_conn_status(s):
         print(f"[{time.strftime('%H:%M:%S')}] 🔌 [状态] {s}")
 
 def call_llm_with_circuit_breaker(cfg, messages, use_fallback=True):
-    global api_cooldown_until, consecutive_failures, _last_api_error
+    global api_cooldown_until, consecutive_failures
 
     with global_state_lock: cooldown_time = api_cooldown_until
 
     if time.time() < cooldown_time:
         return _MODEL_ERR if use_fallback else None
 
+    timeout = int(cfg.get('model_timeout', 120))
     payload = {"model": cfg['model'], "messages": messages, "stream": False}
     req = urllib.request.Request(cfg['url'], data=json.dumps(payload).encode('utf-8'), method='POST')
     req.add_header('Content-Type', 'application/json')
@@ -232,25 +247,16 @@ def call_llm_with_circuit_breaker(cfg, messages, use_fallback=True):
 
     for attempt in range(2):
         try:
-            resp = urllib.request.urlopen(req, timeout=60)
+            resp = urllib.request.urlopen(req, timeout=timeout)
             if resp.getcode() != 200: raise Exception("HTTP Error")
             resp_data = json.loads(resp.read().decode('utf-8'))
             reply = resp_data.get('choices', [{}])[0].get('message', {}).get('content', '') or resp_data.get('response', '') or resp_data.get('message', {}).get('content', '')
-            if cfg['hide_think']: reply = re.sub(r'<think>.*?(?:</think>|$)', '', reply, flags=re.DOTALL).strip()
+            reply = re.sub(r'<think>.*?(?:</think>|$)', '', reply, flags=re.DOTALL).strip()
 
             with global_state_lock: consecutive_failures = 0
-            _last_api_error = ""
             _set_conn_status("online")
             return reply
         except Exception as ex:
-            _last_api_error = str(ex)[:300]
-            try:
-                if hasattr(ex, 'read'):
-                    body = ex.read().decode('utf-8', errors='replace')[:300]
-                    if body:
-                        _last_api_error = body
-            except Exception:
-                pass
             time.sleep(1)
             
     with global_state_lock:
@@ -269,13 +275,14 @@ def call_llm_stream(cfg, messages):
     if time.time() < cooldown_time:
         yield None; return
 
+    timeout = int(cfg.get('model_timeout', 120))
     payload = {"model": cfg['model'], "messages": messages, "stream": True}
     req = urllib.request.Request(cfg['url'], data=json.dumps(payload).encode('utf-8'), method='POST')
     req.add_header('Content-Type', 'application/json')
     if cfg['key'].strip(): req.add_header('Authorization', f"Bearer {cfg['key']}")
 
     try:
-        resp = urllib.request.urlopen(req, timeout=120)
+        resp = urllib.request.urlopen(req, timeout=timeout)
         in_think = False
         for raw_line in resp:
             line = raw_line.decode('utf-8', errors='replace').strip()
@@ -286,20 +293,17 @@ def call_llm_stream(cfg, messages):
                 chunk = json.loads(data)
                 delta = chunk.get('choices', [{}])[0].get('delta', {}).get('content', '')
                 if not delta: continue
-                if cfg.get('hide_think'):
-                    remaining = delta
-                    while remaining:
-                        if not in_think:
-                            idx = remaining.find('<think>')
-                            if idx == -1: yield remaining; break
-                            if idx > 0: yield remaining[:idx]
-                            remaining = remaining[idx + 7:]; in_think = True
-                        else:
-                            idx = remaining.find('</think>')
-                            if idx == -1: break
-                            remaining = remaining[idx + 8:]; in_think = False
-                else:
-                    yield delta
+                remaining = delta
+                while remaining:
+                    if not in_think:
+                        idx = remaining.find('<think>')
+                        if idx == -1: yield remaining; break
+                        if idx > 0: yield remaining[:idx]
+                        remaining = remaining[idx + 7:]; in_think = True
+                    else:
+                        idx = remaining.find('</think>')
+                        if idx == -1: break
+                        remaining = remaining[idx + 8:]; in_think = False
             except: pass
         with global_state_lock: consecutive_failures = 0
         _set_conn_status("online")
@@ -308,7 +312,7 @@ def call_llm_stream(cfg, messages):
             consecutive_failures += 1
             if consecutive_failures >= 3:
                 api_cooldown_until = time.time() + 60
-                _set_conn_status("offline")
+        _set_conn_status("offline")
         yield None
 
 def auto_summarize_memory(cfg, recent_history):
@@ -495,7 +499,7 @@ def handle_wechat_message(msg, account):
             safe_chat = safe_json_read(history_file, [])
             safe_chat.append({"role": "user", "content": user_text, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
             for p in parts:
-                safe_chat.append({"role": "agent", "content": p, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+                safe_chat.append({"role": "agent", "content": _strip_think(p), "time": time.strftime("%Y-%m-%d %H:%M:%S")})
             if len(safe_chat) >= 22:
                 to_summarize = safe_chat[:20]
                 safe_chat = safe_chat[20:]
@@ -624,6 +628,8 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
             folder = urllib.parse.unquote(parts[-2])
             filename = os.path.basename(urllib.parse.unquote(parts[-1]))
             if folder not in ALLOWED_FOLDERS: self.send_response(403); self.end_headers(); return
+            if not filename.lower().endswith(('.txt', '.json')):
+                self.send_response(403); self.end_headers(); return
             file_path = os.path.join(DATA_DIR, folder, filename)
             with file_lock:
                 if os.path.exists(file_path):
@@ -730,6 +736,11 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
                             incoming = json.loads(post_data.get('content', '{}'))
                         except Exception:
                             incoming = {}
+                        new_url = incoming.get('url', '')
+                        if new_url and not new_url.startswith(('http://', 'https://')):
+                            self.send_response(400); self.end_headers()
+                            self.wfile.write(json.dumps({"error": "模型地址仅支持 http/https"}).encode('utf-8'))
+                            return
                         existing.update(incoming)
                         atomic_json_write(target_path, existing)
                     else:
@@ -743,6 +754,10 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
                 role = post_data.get('role')
                 img_b64 = post_data.get('image')
                 if role not in ['agent', 'user'] or not img_b64: self.send_response(400); self.end_headers(); return
+                if len(img_b64) > 5 * 1024 * 1024:
+                    self.send_response(413); self.end_headers()
+                    self.wfile.write(json.dumps({"error": "图片过大，请使用5MB以内的图片"}).encode('utf-8'))
+                    return
                 if ',' in img_b64: img_b64 = img_b64.split(',')[1]
                 img_data = base64.b64decode(img_b64)
                 
@@ -757,6 +772,12 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
                 
         elif self.path == "/api/reset":
             try:
+                post_data = json.loads(self.rfile.read(content_length).decode('utf-8'))
+                token = post_data.get('token', '')
+                if token != 'LangAgent-Reset-Confirm':
+                    self.send_response(403); self.end_headers()
+                    self.wfile.write(json.dumps({"error": "需要确认令牌"}).encode('utf-8'))
+                    return
                 with file_lock:
                     cfg_path = os.path.join(CONFIG_DIR, "config.json")
                     if os.path.exists(cfg_path): os.remove(cfg_path)
@@ -781,9 +802,12 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
                 post_data = json.loads(self.rfile.read(content_length).decode('utf-8'))
                 url = post_data.get('url', '')
                 key = post_data.get('key', '')
+                if not url.startswith(('http://', 'https://')):
+                    self.send_response(400); self.end_headers()
+                    self.wfile.write(json.dumps({"error": "仅支持 http/https 地址"}).encode('utf-8'))
+                    return
                 model_names = []
                 status = "ok"
-                # 尝试 OpenAI 兼容 /v1/models
                 try:
                     models_url = url.replace('/chat/completions', '/models') if '/chat/completions' in url else url.rstrip('/') + '/models'
                     req = urllib.request.Request(models_url, method='GET')
@@ -961,7 +985,7 @@ if __name__ == '__main__':
         sys.exit(0)
 
     print(f"============================================================")
-    print(f"🚀 安全级 Agent 驱动中枢已启动 [时间衰减+心跳架构+防脏数据]")
+    print(f"🚀 LangAgent 已启动")
     print(f"🌐 正在监听端口 {PORT}")
     if WECHAT_AVAILABLE:
         print(f"🔗 微信原生接入模块已就绪")
@@ -970,7 +994,7 @@ if __name__ == '__main__':
                 wechat_agent.start(handle_wechat_message)
                 print(f"[系统] 微信消息服务已自动恢复运行")
     else:
-        print(f"⚠️ 微信模块不可用，使用纯 Web 终端模式")
+        print(f"⚠️ 微信模块不可用，使用纯 Web 模式")
     print(f"============================================================\n")
     if getattr(sys, 'frozen', False):
         threading.Thread(target=lambda: ThreadingServer(('localhost', PORT), AgentHandler).serve_forever(), daemon=True).start()

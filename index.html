@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Agent 沉浸式终端</title>
+    <title>LangAgent</title>
     <style>
         :root, [data-theme="default"] { --primary-color: #d4a373; --primary-light: #e8d5c4; --primary-dark: #bc8a5f; --bg-color: #fdfaf7; --bg-gradient-end: #faedcd; --card-bg: rgba(255, 255, 255, 0.85); --text-main: #5a4a42; --text-sub: #8d7765; --border-color: #e8d5c4; --shadow-soft: 8px 8px 24px rgba(212, 163, 115, 0.15), -8px -8px 24px rgba(255,255,255,0.8); --shadow-inset: inset 4px 4px 10px rgba(212, 163, 115, 0.1), inset -4px -4px 10px rgba(255,255,255,0.9); }
         [data-theme="mint"] { --primary-color: #6ba292; --primary-light: #c5e0d5; --primary-dark: #4a7c6b; --bg-color: #f4f9f6; --bg-gradient-end: #e2f0e8; --card-bg: rgba(255, 255, 255, 0.85); --text-main: #3d4a44; --text-sub: #6d8076; --border-color: #c5e0d5; --shadow-soft: 8px 8px 24px rgba(107, 162, 146, 0.12), -8px -8px 24px rgba(255,255,255,0.8); --shadow-inset: inset 4px 4px 10px rgba(107, 162, 146, 0.08), inset -4px -4px 10px rgba(255,255,255,0.9); }
@@ -130,8 +130,7 @@
 
         #manage-content { flex: 1; padding: 20px; overflow-y: auto; display: flex; justify-content: center; align-items: flex-start;}
         .manage-card { background: rgba(255,255,255,0.6); padding: 30px 30px 0 30px; border-radius: 20px; box-shadow: var(--shadow-soft); width: 100%; max-width: 900px; display: flex; flex-direction: column; box-sizing: border-box; min-height: calc(100% - 40px); }
-        #save-btn-container { position: sticky; bottom: 0; background: var(--bg-color); border-radius: 0 0 20px 20px; padding: 15px 0; margin: 20px -30px 0 -30px; text-align: right; z-index: 10; }
-        #save-btn-container::before { content: ''; position: absolute; top: -20px; left: 0; right: 0; height: 20px; background: linear-gradient(transparent, var(--bg-color)); }
+        #save-btn-container { margin-top: auto; padding: 15px 0; text-align: right; }
         h1 { color: var(--text-sub); border-left: 5px solid var(--primary-color); padding-left: 15px; margin-top: 0; margin-bottom: 20px; font-size: 1.5rem; display: flex; justify-content: space-between; align-items: center; }
         
         textarea.editor { width: 100%; box-sizing: border-box; flex: 1; min-height: 400px; border: none; border-radius: 12px; padding: 20px; font-size: 1.05rem; background: rgba(255,255,255,0.7); box-shadow: var(--shadow-inset); outline: none; resize: vertical; color: var(--text-main); line-height: 1.8; }
@@ -257,7 +256,7 @@
                 <label>您的名称</label>
                 <input type="text" id="setup-user-name" class="wizard-input" value="小黑" autocomplete="off">
             </div>
-            <button class="wizard-btn" onclick="finishWizard()">完成唤醒，进入终端</button>
+            <button class="wizard-btn" onclick="finishWizard()">完成唤醒，进入对话</button>
         </div>
     </div>
 
@@ -284,7 +283,7 @@
                 <b>1.</b> 图片识别需要<b>多模态模型</b>支持（如 gpt-4o、claude、gemini 等）。<br>
                 <b>2.</b> 若模型不支持，图片<b>不会发送</b>，不会进入聊天记录。<br>
                 <b>3.</b> 若内容被云端安全策略拦截，消息<b>不会保留</b>，系统会弹窗告知。<br>
-                <b>4.</b> 图片经压缩后上传，原图不存储在平台。
+                <b>4.</b> 图片经压缩后上传，原图不存储。
             </p>
             <div class="modal-actions">
                 <button class="modal-btn btn-cancel" onclick="closeImageNotice()">稍后再说</button>
@@ -295,7 +294,7 @@
 
     <div id="model-modal">
         <div class="modal-box">
-            <h3>⚙️ 大脑接入中枢</h3>
+            <h3>⚙️ 模型配置</h3>
             <div class="input-group"><label>API Base URL</label><input type="text" id="api-url" class="modal-input"></div>
             <div class="input-group"><label>API Key</label><input type="password" id="api-key" class="modal-input" placeholder="输入密钥"></div>
             <div class="input-group">
@@ -307,11 +306,17 @@
                 </div>
                 <div class="conn-status" id="conn-status"><div class="conn-dot" id="conn-dot"></div><span id="conn-text">未测试连接</span></div>
             </div>
+
             <div class="input-group">
-                <label>隐藏深度思考过程</label>
-                <select id="hide-think-toggle" class="modal-select">
-                    <option value="true">开启隐藏 (推荐)</option><option value="false">关闭隐藏</option>
-                </select>
+                <label>模型超时时间（分钟）</label>
+                <div style="display: flex; align-items: center; gap: 10px; margin-top: 4px;">
+                    <input type="range" id="model-timeout-slider" min="1" max="5" value="2" step="1" style="flex:1;" oninput="document.getElementById('model-timeout-val').innerText=this.value+'分钟'">
+                    <span id="model-timeout-val" style="font-weight:bold;min-width:45px;text-align:center;">2分钟</span>
+                </div>
+                <span style="font-size: 0.72rem; color: var(--text-sub); margin-top: 4px; display: block;">生成回复的最大等待时间，超时判定为请求失败。本地大模型建议调大。</span>
+            </div>
+            <div style="background:#f0f4f8;padding:10px 12px;border-radius:8px;font-size:0.75rem;color:#5a6a7a;line-height:1.5;margin-bottom:15px;">
+                <strong>💡 建议</strong>：推荐使用云端模型。本地模型需确认硬件是否能带动。模型需自行判断是否支持图片识别。
             </div>
             <div class="modal-actions">
                 <button class="modal-btn btn-cancel" onclick="toggleModal(false)">取消</button>
@@ -353,7 +358,7 @@
             <div id="sidebar">
                 <h2 style="color: var(--text-sub); border-bottom: 2px solid var(--border-color); padding-bottom: 10px; margin-top:0; font-size:1.2rem; display:flex; align-items:baseline;">
                     <span style="flex:1;"></span>
-                    <span>控制终端</span>
+                    <span>LangAgent</span>
                     <span id="version-display" style="flex:1; text-align:right; font-size:0.65rem;opacity:0.45;">v-</span>
                 </h2>
                 
@@ -455,8 +460,8 @@
                                 <input type="checkbox" id="set-stream-enable" onchange="setDirty()" style="width: 18px; height: 18px;">
                                 开启流式输出 (打字机效果)
                             </label>
-                            <span style="font-size: 0.78rem; color: var(--text-sub); margin-left: 28px;">仅对终端内对话生效，微信消息使用标准回复模式</span>
                         </div>
+
                         <div style="height: 1px; background: rgba(232,213,196,0.5); margin: 15px 0;"></div>
                         <div class="input-group" style="text-align:center;">
                             <button class="icon-btn" style="display: inline-flex; background: #fff; color: var(--primary-dark); border: 1px solid var(--border-color);" onclick="checkUpdate()">🔍 前往GitHub查看更新</button>
@@ -507,7 +512,7 @@
                         <!-- 已绑定 -->
                         <div id="wechat-bound" style="display:none; flex-direction: column; gap: 15px;">
                             <div id="wechat-stream-warn" style="display:none;background:#fff3cd;padding:10px 15px;border-radius:10px;font-size:0.85rem;color:#856404;border-left:4px solid #ffc107;">
-                                ⚠️ 流式输出仅对终端聊天生效，微信消息使用标准回复模式
+                                ⚠️ 流式输出仅对网页端聊天生效，微信消息使用标准回复模式
                             </div>
                             <div style="background:#fff;padding:20px;border-radius:15px;box-shadow:var(--shadow-soft);">
                                 <p style="font-size:1.1rem;color:#52b788;margin-bottom:10px;"><strong>✅ 已绑定微信</strong></p>
@@ -526,6 +531,7 @@
                             </div>
                         </div>
                     </div>
+
                     <div id="save-btn-container">
                         <button class="icon-btn" style="display: inline-flex; background: var(--primary-color); color: white;" onclick="saveContent()">💾 录入 / 保存修改</button>
                     </div>
@@ -585,6 +591,12 @@
             document.getElementById('set-proactive-end-m').disabled = !isChecked;
             document.getElementById('set-proactive-min').disabled = !isChecked;
             document.getElementById('set-proactive-max').disabled = !isChecked;
+        }
+
+        function onTimeoutSliderChange() {
+            const v = document.getElementById('set-model-timeout').value;
+            document.getElementById('timeout-display').innerText = v + '分钟';
+            setDirty();
         }
 
         function onProactiveSliderChange() {
@@ -709,7 +721,7 @@
         async function finishWizard() {
             const ai_name = document.getElementById('setup-ai-name').value.trim() || "小白";
             const user_name = document.getElementById('setup-user-name').value.trim() || "小黑";
-            const cfg = { url: "http://localhost:11434/v1/chat/completions", key: "", model: "", hide_think: true, ai_name, user_name, proactive_enabled: false, proactive_start: "00:00", proactive_end: "23:59", proactive_min: 120, proactive_max: 240, stream_enabled: false };
+            const cfg = { url: "http://localhost:11434/v1/chat/completions", key: "", model: "", ai_name, user_name, proactive_enabled: false, proactive_start: "00:00", proactive_end: "23:59", proactive_min: 120, proactive_max: 240, stream_enabled: false };
             
             try {
                 let res = await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: '模型配置', filename: 'config.json', content: JSON.stringify(cfg) }) });
@@ -811,7 +823,7 @@
             const sendBtn = document.querySelector('.chat-footer .send-btn');
             if (locked) {
                 input.disabled = true;
-                input.placeholder = '微信消息服务运行中，终端已锁定';
+                input.placeholder = '微信消息服务运行中，输入已锁定';
                 input.style.opacity = '0.5';
                 if (imgBtn) { imgBtn.disabled = true; imgBtn.style.opacity = '0.4'; imgBtn.style.cursor = 'not-allowed'; }
                 if (sendBtn) { sendBtn.disabled = true; sendBtn.style.opacity = '0.4'; sendBtn.style.cursor = 'not-allowed'; }
@@ -901,7 +913,7 @@
             btn.innerText = "重置中...";
             
             try {
-                const res = await fetch('/api/reset', { method: 'POST' });
+                const res = await fetch('/api/reset', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({token: 'LangAgent-Reset-Confirm'}) });
                 if (res.ok) {
                     showToast('系统已重置，正在重新启动...');
                     setTimeout(() => window.location.reload(), 1500);
@@ -925,7 +937,9 @@
                     document.getElementById('api-url').value = cfg.url || '';
                     document.getElementById('api-key').value = cfg.key || '';
                     document.getElementById('model-name').value = cfg.model || '';
-                    document.getElementById('hide-think-toggle').value = cfg.hide_think === false ? "false" : "true";
+                    const to = (cfg.model_timeout || 120) / 60;
+                    document.getElementById('model-timeout-slider').value = to;
+                    document.getElementById('model-timeout-val').innerText = to + '分钟';
                 }
             } catch(e) {}
         }
@@ -975,7 +989,8 @@
             cfg.url = document.getElementById('api-url').value;
             cfg.key = document.getElementById('api-key').value;
             cfg.model = document.getElementById('model-name').value;
-            cfg.hide_think = document.getElementById('hide-think-toggle').value === "true";
+            cfg.hide_think = true;
+            cfg.model_timeout = parseInt(document.getElementById('model-timeout-slider').value) * 60;
             
             try {
                 await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: '模型配置', filename: 'config.json', content: JSON.stringify(cfg, null, 2) }) });
@@ -1228,7 +1243,7 @@
 
             const bubble = document.createElement('div'); bubble.className = 'bubble';
             if(timeStr) { const timeSpan = document.createElement('div'); timeSpan.className = 'msg-time'; timeSpan.innerText = timeStr; bubble.appendChild(timeSpan); }
-            if (imgSrc) { const img = document.createElement('img'); img.src = imgSrc; img.style.maxWidth = '240px'; img.style.maxHeight = '320px'; img.style.borderRadius = '8px'; img.style.objectFit = 'cover'; if(text) img.style.marginBottom = '10px'; bubble.appendChild(img); }
+            if (imgSrc) { const img = document.createElement('img'); img.src = imgSrc; img.style.maxWidth = '240px'; img.style.maxHeight = '320px'; img.style.borderRadius = '8px'; img.style.objectFit = 'cover'; img.style.display = 'block'; if(text) img.style.marginBottom = '10px'; bubble.appendChild(img); }
             if (text) { const span = document.createElement('span'); span.innerText = text; bubble.appendChild(span); }
             
             msgRow.appendChild(avatar); msgRow.appendChild(bubble);
@@ -1467,6 +1482,7 @@
         // ===== 微信原生接入 =====
         let wechatPollTimer = null;
         let wechatQrWindow = null;
+        let wechatBusy = false;
 
         function wechatHideAll() {
             ['wechat-unbound','wechat-logging','wechat-bound'].forEach(id => {
@@ -1475,7 +1491,6 @@
         }
 
         async function wechatRefreshUI() {
-            wechatHideAll();
             try {
                 const res = await fetch('/api/wechat/status', { method: 'POST' });
                 const st = await res.json();
@@ -1501,10 +1516,12 @@
         }
 
         function wechatCancelLogin() {
+            wechatBusy = false;
             if (wechatPollTimer) { clearInterval(wechatPollTimer); wechatPollTimer = null; }
             closeQrWindow();
             fetch('/api/wechat/login_cancel', { method: 'POST' }).catch(()=>{});
-            wechatRefreshUI();
+            wechatHideAll();
+            document.getElementById('wechat-unbound').style.display = 'block';
         }
 
         function closeQrWindow() {
@@ -1517,6 +1534,8 @@
         }
 
         function openQrUrl(url) {
+            // 防止重复打开
+            closeQrWindow();
             if (window.pywebview && window.pywebview.api) {
                 try { window.pywebview.api.openQrWindow(url); } catch(e) {}
             } else {
@@ -1525,19 +1544,25 @@
         }
 
         async function wechatStartLogin() {
+            if (wechatBusy) return;
+            wechatBusy = true;
+            document.getElementById('wechat-unbound').style.display = 'none';
+            document.getElementById('wechat-logging').style.display = 'block';
+            document.getElementById('wechat-qr-status').innerText = '正在获取二维码...';
+            document.getElementById('wechat-qr-status').style.color = '#d4a373';
             const res = await fetch('/api/wechat/login_start', { method: 'POST' });
             const data = await res.json();
             if (data.ok && data.qrcode_url) {
-                document.getElementById('wechat-unbound').style.display = 'none';
-                document.getElementById('wechat-logging').style.display = 'block';
                 document.getElementById('wechat-qr-link').href = data.qrcode_url;
                 document.getElementById('wechat-qr-status').innerText = '等待扫码中...';
                 document.getElementById('wechat-qr-status').style.color = '#52b788';
                 openQrUrl(data.qrcode_url);
                 wechatPollTimer = setInterval(wechatPollLogin, 2500);
             } else {
+                wechatCancelLogin();
                 showToast('获取二维码失败: ' + (data.error || '服务端未返回二维码'));
             }
+            wechatBusy = false;
         }
 
         async function wechatPollLogin() {
@@ -1555,7 +1580,8 @@
                 clearInterval(wechatPollTimer); wechatPollTimer = null;
                 closeQrWindow();
                 stEl.innerText = '二维码已过期，请重新获取'; stEl.style.color = '#e07a5f';
-                setTimeout(() => wechatRefreshUI(), 1500);
+                wechatBusy = false;
+                setTimeout(() => { wechatHideAll(); document.getElementById('wechat-unbound').style.display = 'block'; }, 1500);
             } else if (data.status === 'error') {
                 clearInterval(wechatPollTimer); wechatPollTimer = null;
                 closeQrWindow();

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""微信原生接入模块 —— 独立于主平台，通过 WeChat Bot API 直接收发消息。"""
+"""微信原生接入模块 —— 通过 WeChat Bot API 直接收发消息。"""
 import json
 import os
 import threading
@@ -214,7 +214,7 @@ def get_updates(account=None):
         data = _post_api(account["base_url"], "ilink/bot/getupdates", {
             "get_updates_buf": "",
             "base_info": {"channel_version": "2.4.3", "bot_agent": "OpenClaw"},
-        }, account["bot_token"], timeout=40)
+        }, account["bot_token"], timeout=10)
         return data.get("msgs", [])
     except Exception:
         return []
