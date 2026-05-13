@@ -57,7 +57,7 @@ def _app_path(rel_path):
     return bundled
 
 PORT = 5622
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 # 打包后 Program Files 无写权限，数据存用户目录
 if getattr(sys, 'frozen', False):
     DATA_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'LangAgent')

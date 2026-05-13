@@ -400,7 +400,7 @@
                         <div class="input-group">
                             <label style="display: flex; align-items: center; gap: 10px; font-size: 1.1rem; color: var(--primary-dark);">
                                 <input type="checkbox" id="set-proactive-enable" onchange="toggleProactive(true); setDirty()" style="width: 18px; height: 18px;">
-                                开启主动消息破冰
+                                开启主动消息
                             </label>
                         </div>
                         <div class="input-group" id="proactive-time-group" style="opacity: 0.5;">
@@ -456,6 +456,10 @@
                                 开启流式输出 (打字机效果)
                             </label>
                             <span style="font-size: 0.78rem; color: var(--text-sub); margin-left: 28px;">仅对终端内对话生效，微信消息使用标准回复模式</span>
+                        </div>
+                        <div style="height: 1px; background: rgba(232,213,196,0.5); margin: 15px 0;"></div>
+                        <div class="input-group" style="text-align:center;">
+                            <button class="icon-btn" style="display: inline-flex; background: #fff; color: var(--primary-dark); border: 1px solid var(--border-color);" onclick="checkUpdate()">🔍 前往GitHub查看更新</button>
                         </div>
                         <div style="height: 1px; background: rgba(232,213,196,0.5); margin: 15px 0;"></div>
                         <div class="input-group">
@@ -1068,6 +1072,10 @@
         }
 
         function removeImage() { currentImageBase64 = null; document.getElementById('image-preview-container').style.display = 'none'; }
+
+        function checkUpdate() {
+            window.open('https://github.com/RenLa5223/LangAgent/releases', '_blank');
+        }
 
         async function fetchSignature() {
             try {
