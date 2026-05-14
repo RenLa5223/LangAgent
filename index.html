@@ -754,6 +754,9 @@
                 if (!confirm("有未保存的修改，确认放弃并返回聊天吗？")) return;
                 isDirty = false;
             }
+            if (wechatPollTimer && viewName === 'chat') {
+                showToast('扫码进行中，完成后请返回查看');
+            }
             document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
             document.getElementById(viewName + '-view').classList.add('active');
             if (viewName === 'chat') initChatHistory();
@@ -1257,6 +1260,9 @@
                 if (!confirm("有未保存的修改，确认放弃吗？")) return;
                 isDirty = false;
             }
+            if (wechatPollTimer && type !== 'wechat') {
+                showToast('扫码进行中，完成后将自动更新状态');
+            }
             currentModuleType = type;
             currentModuleName = name;
             pendingAvatarBase64 = null;
@@ -1293,7 +1299,13 @@
                 stdEditor.style.display = 'none'; jsonEditor.style.display = 'none'; configEditor.style.display = 'none';
                 saveBtnContainer.style.display = 'none';
                 wechatPanel.style.display = 'flex';
-                wechatRefreshUI();
+                if (wechatPollTimer) {
+                    // 扫码进行中，直接恢复扫码界面
+                    wechatHideAll();
+                    document.getElementById('wechat-logging').style.display = 'block';
+                } else {
+                    wechatRefreshUI();
+                }
             }
             else if (type === 'txt') {
                 stdEditor.style.display = 'block'; jsonEditor.style.display = 'none'; configEditor.style.display = 'none';
