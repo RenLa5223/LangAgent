@@ -1015,7 +1015,7 @@ if __name__ == '__main__':
                     sw = ctypes.windll.user32.GetSystemMetrics(0)
                     sh = ctypes.windll.user32.GetSystemMetrics(1)
                     w, h = 420, 520
-                    x, y = sw - w - 40, (sh - h) // 2
+                    x, y = (sw - w) // 2, (sh - h) // 2
                     qr_win = webview.create_window('微信扫码绑定', url, width=w, height=h,
                                                     x=x, y=y, resizable=False, on_top=True)
                     _api._qr_win = qr_win
