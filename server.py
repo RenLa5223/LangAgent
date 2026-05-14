@@ -57,7 +57,7 @@ def _app_path(rel_path):
     return bundled
 
 PORT = 5622
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.1.0"
 # 打包后 Program Files 无写权限，数据存用户目录
 if getattr(sys, 'frozen', False):
     DATA_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'LangAgent')
@@ -291,7 +291,7 @@ def call_llm_stream(cfg, messages):
             if data == '[DONE]': break
             try:
                 chunk = json.loads(data)
-                delta = chunk.get('choices', [{}])[0].get('delta', {}).get('content', '')
+                delta = chunk.get('choices', [{}])[0].get('delta', {}).get('content') or ''
                 if not delta: continue
                 remaining = delta
                 while remaining:
@@ -328,6 +328,7 @@ def auto_summarize_memory(cfg, recent_history):
 
 任务1：用第一人称（我）写一段简短私密日记，总结这段对话中发生的关键事件或约定。
 任务2：从对话中提取关于他（{cfg.get("user_name", "用户")}）的【新情报】，只记录事实性信息（饮食喜好、习惯、近期状态等），不写叙事，不推测。如果某项情报在【已有情报】中已存在，不需要重复记录。
+任务3（记忆强化）：如果对话内容在重复/延续之前已记录过的话题，且你十分确定是同一件事，请设置 "reinforce": "旧记忆的关键特征短语（10字以内）"。若不确定，不要设此字段，让系统作为新情报处理（不匹配的重复记忆会自然衰减消失）。
 
 ⚠️ 绝对不要把你自己（{cfg.get("ai_name", "AI")}）的特征、习惯、行为写进 new_user_profile。
 
@@ -335,7 +336,7 @@ def auto_summarize_memory(cfg, recent_history):
 {current_inner_thoughts[-800:]}
 
 你必须且只能返回纯JSON数据，不要包含```json标记。格式要求如下：
-{{"content": "今天他跟我说...", "importance": 5, "new_user_profile": "饮食喜好：xxx\\n习惯：xxx\\n近期状态：xxx"}}
+{{"content": "今天他跟我说...", "importance": 5, "reinforce": "需要匹配的关键词（可选字段）", "new_user_profile": "饮食喜好：xxx\\n习惯：xxx\\n近期状态：xxx"}}
 【重要度说明】：1=寒暄闲聊转眼就忘, 3=一般日常几天后模糊, 5=值得记住的互动, 7=重要约定或情绪波动, 10=影响一生的关键事件"""
         
         chat_text = "\n".join([f"{cfg.get('ai_name', 'AI') if msg['role'] == 'agent' else cfg.get('user_name', '用户')}: {msg['content']}" for msg in recent_history])
@@ -356,10 +357,22 @@ def auto_summarize_memory(cfg, recent_history):
                 summary_file = os.path.join(MEM_DIR, "memory_summary.json")
                 with file_lock:
                     mem_data = safe_json_read(summary_file, {"items": []})
-                    if new_mem.get("content"):
+                    reinforced = False
+                    reinforce_kw = str(new_mem.get("reinforce", "")).strip()
+                    if len(reinforce_kw) >= 3 and reinforce_kw.lower() not in ("无", "none", "null", ""):
+                        items = mem_data.get("items", [])
+                        for old in items:
+                            old_content = old.get("content", "")
+                            if reinforce_kw in old_content:
+                                old["time"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                                old["importance"] = min(10, int(old.get("importance", 5)) + 1)
+                                reinforced = True
+                                print(f"[{time.strftime('%H:%M:%S')}] 🧠 [记忆强化] 刷新 +1: {reinforce_kw[:30]}")
+                                break
+                    if not reinforced and new_mem.get("content"):
                         new_mem['time'] = time.strftime("%Y-%m-%d %H:%M:%S")
                         mem_data['items'].append(new_mem)
-                        atomic_json_write(summary_file, mem_data)
+                    atomic_json_write(summary_file, mem_data)
 
                 new_facts = str(new_mem.get("new_user_profile", "")).strip()
                 if new_facts and new_facts.lower() not in ["无", "none", "null", ""]:
@@ -419,8 +432,13 @@ def proactive_worker():
                     pass
                 prompt = f"你是{ai_name}。\n【人设】{profile_text}\n\n以下是你们最近的对话：\n\n{context_str}\n\n{user_name}已经有一段时间没回复了。请根据人设和上述对话上下文，主动发一条自然延续话题的消息。如果对方之前说了要去做什么，可以关心进度；如果之前的话题被打断，可以尝试接续。不超过20个字，不要用任何解释和前缀，直接给出对话内容。"
                 
+                snap_time = last_interaction_time
                 reply = call_llm_with_circuit_breaker(cfg, [{"role": "user", "content": prompt}], use_fallback=False)
                 if reply:
+                    with global_state_lock:
+                        if last_interaction_time != snap_time:
+                            print(f"[{time.strftime('%H:%M:%S')}] 💌 [主动关怀] 用户抢先发言，丢弃")
+                            continue
                     parts = [p.strip() for p in re.split(r'(?<=[。！？!\?\n])', reply) if p.strip()]
                     if not parts: parts = [reply]
                     with file_lock:
@@ -481,39 +499,52 @@ def handle_wechat_message(msg, account):
         context_token = msg.get("msg", {}).get("context_token", msg.get("context_token", ""))
         print(f"[{time.strftime('%H:%M:%S')}] 📥 [微信] {from_user[:20]}...: {user_text[:50]}")
 
-        cfg = safe_json_read(os.path.join(CONFIG_DIR, "config.json"), {})
-        system_prompt, chat_history, history_file = build_chat_context(cfg)
-        llm_messages = build_llm_messages(system_prompt, chat_history, user_text)
+        def _process_and_reply():
+            try:
+                cfg = safe_json_read(os.path.join(CONFIG_DIR, "config.json"), {})
+                system_prompt, chat_history, history_file = build_chat_context(cfg)
+                llm_messages = build_llm_messages(system_prompt, chat_history, user_text)
 
-        ai_reply = call_llm_with_circuit_breaker(cfg, llm_messages, use_fallback=True)
-        if not ai_reply or ai_reply.strip() == _MODEL_ERR:
-            return
+                ai_reply = call_llm_with_circuit_breaker(cfg, llm_messages, use_fallback=True)
+                if not ai_reply or ai_reply.strip() == _MODEL_ERR:
+                    with file_lock:
+                        safe_chat = safe_json_read(history_file, [])
+                        safe_chat.append({"role": "user", "content": user_text, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+                        atomic_json_write(history_file, safe_chat)
+                    update_interaction_time(cfg)
+                    wechat_agent.send_message(from_user, "（脑子卡了一下，刚才没听清，你再说一遍？）", account, context_token)
+                    print(f"[{time.strftime('%H:%M:%S')}] ⚠️ [微信] 模型不可用，已发送降级回复")
+                    return
 
-        parts = [p.strip() for p in re.split(r'(?<=[。！？!?\n])', ai_reply) if p.strip()]
-        if not parts: parts = [ai_reply]
-        clean_reply = ''.join(parts)
+                parts = [p.strip() for p in re.split(r'(?<=[。！？!?\n])', ai_reply) if p.strip()]
+                if not parts: parts = [ai_reply]
+                clean_reply = ''.join(parts)
 
-        start_summary = False
-        to_summarize = []
-        with file_lock:
-            safe_chat = safe_json_read(history_file, [])
-            safe_chat.append({"role": "user", "content": user_text, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
-            for p in parts:
-                safe_chat.append({"role": "agent", "content": _strip_think(p), "time": time.strftime("%Y-%m-%d %H:%M:%S")})
-            if len(safe_chat) >= 22:
-                to_summarize = safe_chat[:20]
-                safe_chat = safe_chat[20:]
-                start_summary = True
-            atomic_json_write(history_file, safe_chat)
+                start_summary = False
+                to_summarize = []
+                with file_lock:
+                    safe_chat = safe_json_read(history_file, [])
+                    safe_chat.append({"role": "user", "content": user_text, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+                    for p in parts:
+                        safe_chat.append({"role": "agent", "content": _strip_think(p), "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+                    if len(safe_chat) >= 22:
+                        to_summarize = safe_chat[:20]
+                        safe_chat = safe_chat[20:]
+                        start_summary = True
+                    atomic_json_write(history_file, safe_chat)
 
-        update_interaction_time(cfg)
+                update_interaction_time(cfg)
 
-        if start_summary:
-            threading.Thread(target=auto_summarize_memory, args=(cfg, to_summarize)).start()
+                if start_summary:
+                    threading.Thread(target=auto_summarize_memory, args=(cfg, to_summarize)).start()
 
-        if clean_reply.strip():
-            wechat_agent.send_message(from_user, clean_reply, account, context_token)
-        print(f"[{time.strftime('%H:%M:%S')}] 💬 [微信] 回复: {clean_reply[:40]}")
+                if clean_reply.strip():
+                    wechat_agent.send_message(from_user, clean_reply, account, context_token)
+                print(f"[{time.strftime('%H:%M:%S')}] 💬 [微信] 回复: {clean_reply[:40]}")
+            except Exception as e:
+                print(f"[{time.strftime('%H:%M:%S')}] ⚠️ [微信处理] 异常: {str(e)[:150]}")
+
+        threading.Thread(target=_process_and_reply, daemon=True).start()
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] ⚠️ [微信] 异常: {str(e)[:150]}")
 class AgentHandler(http.server.BaseHTTPRequestHandler):
@@ -884,24 +915,22 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
                             buf = ""
                     except Exception:
                         pass
+
                     rejected = False
-                    try:
-                        pass
-                    finally:
-                        if buf.strip():
-                            parts.append(buf.strip())
-                            self.wfile.write(f"data: {json.dumps({'type': 'sentence', 'text': buf.strip()}, ensure_ascii=False)}\n\n".encode())
-                        if not parts:
-                            self.wfile.write(f"data: {json.dumps({'type': 'error', 'message': '请求失败，请检查模型配置是否正确'}, ensure_ascii=False)}\n\n".encode())
-                            self.wfile.write(b"data: {\"type\":\"done\"}\n\n")
-                            self.wfile.flush()
-                            return
-                        full_text = ''.join(parts)
-                        if _is_rejected(full_text):
-                            self.wfile.write(f"data: {json.dumps({'type': 'error', 'message': '请求失败，请检查模型配置是否正确'}, ensure_ascii=False)}\n\n".encode())
-                            rejected = True
+                    if buf.strip():
+                        parts.append(buf.strip())
+                        self.wfile.write(f"data: {json.dumps({'type': 'sentence', 'text': buf.strip()}, ensure_ascii=False)}\n\n".encode())
+                    if not parts:
+                        self.wfile.write(f"data: {json.dumps({'type': 'error', 'message': '请求失败，请检查模型配置是否正确'}, ensure_ascii=False)}\n\n".encode())
                         self.wfile.write(b"data: {\"type\":\"done\"}\n\n")
                         self.wfile.flush()
+                        return
+                    full_text = ''.join(parts)
+                    if _is_rejected(full_text):
+                        self.wfile.write(f"data: {json.dumps({'type': 'error', 'message': '请求失败，请检查模型配置是否正确'}, ensure_ascii=False)}\n\n".encode())
+                        rejected = True
+                    self.wfile.write(b"data: {\"type\":\"done\"}\n\n")
+                    self.wfile.flush()
 
                     if rejected:
                         return

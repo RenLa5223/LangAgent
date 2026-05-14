@@ -1096,6 +1096,16 @@
             window.open('https://github.com/RenLa5223/LangAgent/releases', '_blank');
         }
 
+        function escapeHtml(text) {
+            if (!text) return '';
+            return text.toString()
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
         async function fetchSignature() {
             try {
                 const res = await fetch('/api/signature');
@@ -1162,6 +1172,7 @@
             appendMessageDOM('user', text, timeStr, currentImageBase64);
             const streamOn = document.getElementById('set-stream-enable').checked;
             const payload = { message: text, image: currentImageBase64, stream: streamOn };
+            const savedText = text, savedImage = currentImageBase64;
             inputEl.value = ''; inputEl.style.height = '24px'; removeImage();
             try {
                 const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -1197,6 +1208,12 @@
                                             chatBox.removeChild(chatBox.lastChild);
                                             localMsgCount -= 1;
                                         }
+                                        inputEl.value = savedText;
+                                        if (savedImage) {
+                                            currentImageBase64 = savedImage;
+                                            document.getElementById('image-preview').src = savedImage;
+                                            document.getElementById('image-preview-container').style.display = 'block';
+                                        }
                                         isTyping = false;
                                         return;
                                     }
@@ -1219,6 +1236,13 @@
                             if (chatBox.lastChild && chatBox.lastChild.classList.contains('user'))
                                 chatBox.removeChild(chatBox.lastChild);
                             localMsgCount -= 1;
+                            // 恢复输入框和图片
+                            inputEl.value = savedText;
+                            if (savedImage) {
+                                currentImageBase64 = savedImage;
+                                document.getElementById('image-preview').src = savedImage;
+                                document.getElementById('image-preview-container').style.display = 'block';
+                            }
                         } else {
                             await renderReplyParts(['【报错】: ' + (data.message || data.error || '未知错误')]);
                         }
@@ -1362,7 +1386,7 @@
                 const color = msg.role === 'agent' ? 'var(--primary-color)' : 'var(--primary-dark)';
                 const card = document.createElement('div'); card.className = 'memory-card';
                 card.innerHTML = `<div class="memory-meta"><span style="color:${color}">${roleName}</span><span>${msg.time || ''}</span></div>
-                    <textarea class="memory-text" oninput="setDirty()" onchange="updateJsonData(${index}, 'content', this.value)">${msg.content}</textarea>
+                    <textarea class="memory-text" oninput="setDirty()" onchange="updateJsonData(${index}, 'content', this.value)">${escapeHtml(msg.content)}</textarea>
                     <button class="mem-del-btn" onclick="deleteJsonItem(${index})">删除</button>`;
                 ui.appendChild(card);
             });
@@ -1410,7 +1434,7 @@
                 <div style="height:3px;border-radius:2px;background:rgba(0,0,0,0.05);overflow:hidden;">
                     <div style="height:100%;width:${Math.min(100, Math.round(score/10*100))}%;background:${state.color};border-radius:2px;transition:width 0.5s;"></div>
                 </div>
-                <textarea class="memory-text" oninput="setDirty()" onchange="updateJsonData(${index}, 'content', this.value)">${mem.content}</textarea>
+                <textarea class="memory-text" oninput="setDirty()" onchange="updateJsonData(${index}, 'content', this.value)">${escapeHtml(mem.content)}</textarea>
                 <button class="mem-del-btn" onclick="deleteJsonItem(${index})">抹除</button>`;
                 ui.appendChild(card);
             });
