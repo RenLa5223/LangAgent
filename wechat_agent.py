@@ -237,7 +237,11 @@ def _agent_loop(inbound_callback):
             if msgs:
                 _agent_state["last_inbound"] = time.strftime("%Y-%m-%d %H:%M:%S")
                 for msg in msgs:
-                    inbound_callback(msg, account)
+                    # 仅处理文字消息，屏蔽语音/图片/视频/文件
+                    item_list = msg.get("msg", {}).get("item_list", msg.get("item_list", []))
+                    has_text = any(item.get("type") == 1 for item in item_list if isinstance(item, dict))
+                    if has_text:
+                        inbound_callback(msg, account)
         except Exception as e:
             _agent_state["last_error"] = str(e)[:200]
             time.sleep(5)
