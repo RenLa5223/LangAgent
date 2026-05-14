@@ -250,6 +250,13 @@ def call_llm_with_circuit_breaker(cfg, messages, use_fallback=True):
             resp = urllib.request.urlopen(req, timeout=timeout)
             if resp.getcode() != 200: raise Exception("HTTP Error")
             resp_data = json.loads(resp.read().decode('utf-8'))
+            # 检测 API 返回的错误（如模型名错误、余额不足等）
+            api_err = resp_data.get('error')
+            if api_err:
+                err_msg = api_err.get('message', '') if isinstance(api_err, dict) else str(api_err)
+                if not err_msg:
+                    err_msg = str(api_err)[:200]
+                raise Exception(f"API Error: {err_msg}")
             reply = resp_data.get('choices', [{}])[0].get('message', {}).get('content', '') or resp_data.get('response', '') or resp_data.get('message', {}).get('content', '')
             reply = re.sub(r'<think>.*?(?:</think>|$)', '', reply, flags=re.DOTALL).strip()
 

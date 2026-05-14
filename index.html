@@ -1172,7 +1172,6 @@
             appendMessageDOM('user', text, timeStr, currentImageBase64);
             const streamOn = document.getElementById('set-stream-enable').checked;
             const payload = { message: text, image: currentImageBase64, stream: streamOn };
-            const savedText = text, savedImage = currentImageBase64;
             inputEl.value = ''; inputEl.style.height = '24px'; removeImage();
             try {
                 const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -1198,22 +1197,6 @@
                                     else if (d.type === 'error') {
                                         indicator.style.display = 'none';
                                         showToast(d.message || '发送失败');
-                                        // 清除已显示的流式气泡和发送方气泡
-                                        const chatBox = document.getElementById('chat-box');
-                                        while (chatBox.lastChild && chatBox.lastChild.classList.contains('agent')) {
-                                            chatBox.removeChild(chatBox.lastChild);
-                                            localMsgCount -= 1;
-                                        }
-                                        if (chatBox.lastChild && chatBox.lastChild.classList.contains('user')) {
-                                            chatBox.removeChild(chatBox.lastChild);
-                                            localMsgCount -= 1;
-                                        }
-                                        inputEl.value = savedText;
-                                        if (savedImage) {
-                                            currentImageBase64 = savedImage;
-                                            document.getElementById('image-preview').src = savedImage;
-                                            document.getElementById('image-preview-container').style.display = 'block';
-                                        }
                                         isTyping = false;
                                         return;
                                     }
@@ -1229,28 +1212,11 @@
                         localMsgCount += parts.length;
                         await renderReplyParts(parts);
                     } else {
-                        // 图片相关错误：弹窗告知，不写入聊天历史，移除已显示的发送气泡
-                        if (data.error === 'content_rejected') {
-                            showToast(data.message || '请求失败，请检查模型配置');
-                            const chatBox = document.getElementById('chat-box');
-                            if (chatBox.lastChild && chatBox.lastChild.classList.contains('user'))
-                                chatBox.removeChild(chatBox.lastChild);
-                            localMsgCount -= 1;
-                            // 恢复输入框和图片
-                            inputEl.value = savedText;
-                            if (savedImage) {
-                                currentImageBase64 = savedImage;
-                                document.getElementById('image-preview').src = savedImage;
-                                document.getElementById('image-preview-container').style.display = 'block';
-                            }
-                        } else {
-                            await renderReplyParts(['【报错】: ' + (data.message || data.error || '未知错误')]);
-                        }
+                        showToast(data.message || data.error || '请求失败，请检查模型配置');
                     }
                 }
             } catch (error) {
-                if (streamOn) { appendMessageDOM('agent', '【网络错误】: 管家未响应', new Date().toLocaleTimeString()); }
-                else await renderReplyParts(['【网络错误】: 管家未响应']);
+                showToast('网络错误，管家未响应');
             } finally {
                 isTyping = false;
             }
