@@ -774,11 +774,6 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
                             incoming = json.loads(post_data.get('content', '{}'))
                         except Exception:
                             incoming = {}
-                        new_url = incoming.get('url', '')
-                        if new_url and not new_url.startswith(('http://', 'https://')):
-                            self.send_response(400); self.end_headers()
-                            self.wfile.write(json.dumps({"error": "模型地址仅支持 http/https"}).encode('utf-8'))
-                            return
                         existing.update(incoming)
                         atomic_json_write(target_path, existing)
                     else:
@@ -840,27 +835,30 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
                 post_data = json.loads(self.rfile.read(content_length).decode('utf-8'))
                 url = post_data.get('url', '')
                 key = post_data.get('key', '')
-                if not url.startswith(('http://', 'https://')):
-                    self.send_response(400); self.end_headers()
-                    self.wfile.write(json.dumps({"error": "仅支持 http/https 地址"}).encode('utf-8'))
-                    return
                 model_names = []
                 status = "ok"
-                try:
-                    models_url = url.replace('/chat/completions', '/models') if '/chat/completions' in url else url.rstrip('/') + '/models'
-                    req = urllib.request.Request(models_url, method='GET')
-                    if key.strip(): req.add_header('Authorization', f'Bearer {key}')
-                    resp = urllib.request.urlopen(req, timeout=5)
-                    model_names = [m['id'] for m in json.loads(resp.read().decode('utf-8')).get('data', [])]
-                except Exception:
-                    pass
-                # 尝试 Ollama /api/tags（仅本地地址）
-                if not model_names and ('localhost' in url or '127.0.0.1' in url or '11434' in url):
+                # 归一化基础 URL：去尾部常见后缀
+                base = url.rstrip('/')
+                for suffix in ['/chat/completions', '/models', '/v1/models']:
+                    if base.endswith(suffix):
+                        base = base[:-len(suffix)]
+                        break
+                # 依次尝试不同模型列表端点
+                endpoints = ['/models', '/v1/models', '/api/tags']
+                for ep in endpoints:
+                    if model_names:
+                        break
                     try:
-                        base = '/'.join(url.split('/')[:3])
-                        req = urllib.request.Request(f"{base}/api/tags", method='GET')
+                        models_url = base.rstrip('/') + ep
+                        req = urllib.request.Request(models_url, method='GET')
+                        if key.strip(): req.add_header('Authorization', f'Bearer {key}')
                         resp = urllib.request.urlopen(req, timeout=5)
-                        model_names = [m['name'] for m in json.loads(resp.read().decode('utf-8')).get('models', [])]
+                        data = json.loads(resp.read().decode('utf-8'))
+                        if 'models' in data:
+                            model_names = [m.get('name', m.get('id', '')) for m in data.get('models', [])]
+                        else:
+                            model_names = [m.get('id', m.get('name', '')) for m in data.get('data', [])]
+                        model_names = [n for n in model_names if n]
                     except Exception:
                         pass
                 # 都没拿到则用已填写的模型名作为兜底
@@ -869,11 +867,11 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
                     if manual:
                         model_names = [manual]
                         status = "fallback"
-                if model_names:
-                    self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
-                    self.wfile.write(json.dumps({"models": model_names, "status": status}).encode('utf-8'))
-                else:
-                    raise Exception("无法获取模型列表，请手动输入")
+                if not model_names:
+                    model_names = ["（未能探测，请手动输入模型名）"]
+                    status = "fallback"
+                self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
+                self.wfile.write(json.dumps({"models": model_names, "status": status}).encode('utf-8'))
             except Exception as e:
                 self.send_response(500); self.end_headers()
                 self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))

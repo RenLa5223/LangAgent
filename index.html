@@ -295,7 +295,7 @@
     <div id="model-modal">
         <div class="modal-box">
             <h3>⚙️ 模型配置</h3>
-            <div class="input-group"><label>API Base URL</label><input type="text" id="api-url" class="modal-input"></div>
+            <div class="input-group"><label>API Base URL</label><input type="text" id="api-url" class="modal-input" placeholder="http://127.0.0.1:1234/v1"><span style="font-size:0.72rem;color:var(--text-sub);">填写到 /v1 即可，探测后自动补全</span></div>
             <div class="input-group"><label>API Key</label><input type="password" id="api-key" class="modal-input" placeholder="输入密钥"></div>
             <div class="input-group">
                 <label>模型名称</label>
@@ -974,17 +974,26 @@
                 const res = await fetch('/api/get_models', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, key, model: modelInput.value }) });
                 const data = await res.json();
                 if (res.ok && data.models && data.models.length > 0) {
-                    dot.className = "conn-dot green"; text.innerText = "已连接"; text.style.color = "#52b788";
-                    dataList.innerHTML = '';
-                    data.models.forEach(m => { const opt = document.createElement('option'); opt.value = m; dataList.appendChild(opt); });
-                    modelInput.value = data.models[0];
-                    if (data.status === 'fallback') {
-                        showToast('已连接，但无法自动获取模型列表，请手动输入');
-                    } else {
-                        showToast('探测成功，已自动替换模型名称');
+                    const urlEl = document.getElementById('api-url');
+                    let u = urlEl.value.trim();
+                    if (u.includes('/v1')) {
+                        let clean = u.replace(/\/v1\/.*$/, '/v1').replace(/\/+$/, '');
+                        urlEl.value = clean + '/chat/completions';
                     }
-                } else throw new Error();
-            } catch(e) { dot.className = "conn-dot red"; text.innerText = "连接异常"; text.style.color = "#e07a5f"; showToast('获取失败');}
+                    if (data.status === 'fallback') {
+                        dot.className = "conn-dot red"; text.innerText = "未检测到模型"; text.style.color = "#e07a5f";
+                    } else {
+                        dot.className = "conn-dot green"; text.innerText = "已连接"; text.style.color = "#52b788";
+                        dataList.innerHTML = '';
+                        data.models.forEach(m => { const opt = document.createElement('option'); opt.value = m; dataList.appendChild(opt); });
+                        modelInput.value = data.models[0];
+                    }
+                } else {
+                    dot.className = "conn-dot red"; text.innerText = "连接异常"; text.style.color = "#e07a5f";
+                }
+            } catch(e) {
+                dot.className = "conn-dot red"; text.innerText = "连接异常"; text.style.color = "#e07a5f";
+            }
         }
 
         async function saveModelConfig() {
@@ -1096,6 +1105,12 @@
             window.open('https://github.com/RenLa5223/LangAgent/releases', '_blank');
         }
 
+        function removeLastUserBubble() {
+            const chatBox = document.getElementById('chat-box');
+            if (chatBox.lastChild && chatBox.lastChild.classList.contains('user'))
+                chatBox.removeChild(chatBox.lastChild);
+        }
+
         function escapeHtml(text) {
             if (!text) return '';
             return text.toString()
@@ -1196,6 +1211,8 @@
                                     }
                                     else if (d.type === 'error') {
                                         indicator.style.display = 'none';
+                                        removeLastUserBubble();
+                                        localMsgCount -= 1;
                                         showToast(d.message || '发送失败');
                                         isTyping = false;
                                         return;
@@ -1212,10 +1229,14 @@
                         localMsgCount += parts.length;
                         await renderReplyParts(parts);
                     } else {
+                        removeLastUserBubble();
+                        localMsgCount -= 1;
                         showToast(data.message || data.error || '请求失败，请检查模型配置');
                     }
                 }
             } catch (error) {
+                removeLastUserBubble();
+                localMsgCount -= 1;
                 showToast('网络错误，管家未响应');
             } finally {
                 isTyping = false;
