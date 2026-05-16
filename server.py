@@ -57,7 +57,7 @@ def _app_path(rel_path):
     return bundled
 
 PORT = 5622
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 # 打包后 Program Files 无写权限，数据存用户目录
 if getattr(sys, 'frozen', False):
     DATA_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'LangAgent')
@@ -490,12 +490,79 @@ def memory_decay_cleaner():
 
 threading.Thread(target=memory_decay_cleaner, daemon=True).start()
 
+# 微信消息批量等待
+_pending_msgs = {}  # {from_user: {msgs: [str], account, context_token, timer}}
+_pending_lock = threading.Lock()
+
+def _flush_wechat_batch(from_user):
+    with _pending_lock:
+        entry = _pending_msgs.pop(from_user, None)
+    if not entry or not entry['msgs']:
+        return
+    texts = entry['msgs']
+    combined = '\n'.join(texts)
+    context_token = entry['context_token']
+    account = entry['account']
+
+    def _process_and_reply():
+        try:
+            cfg = safe_json_read(os.path.join(CONFIG_DIR, "config.json"), {})
+            system_prompt, chat_history, history_file = build_chat_context(cfg)
+            llm_messages = build_llm_messages(system_prompt, chat_history, combined)
+
+            ai_reply = call_llm_with_circuit_breaker(cfg, llm_messages, use_fallback=True)
+            if not ai_reply or ai_reply.strip() == _MODEL_ERR:
+                with file_lock:
+                    safe_chat = safe_json_read(history_file, [])
+                    for t in texts:
+                        safe_chat.append({"role": "user", "content": t, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+                    atomic_json_write(history_file, safe_chat)
+                update_interaction_time(cfg)
+                wechat_agent.send_message(from_user, "（脑子卡了一下，刚才没听清，你再说一遍？）", account, context_token)
+                print(f"[{time.strftime('%H:%M:%S')}] ⚠️ [微信批量] 模型不可用，已发送降级回复")
+                return
+
+            parts = [p.strip() for p in re.split(r'(?<=[。！？!?\n])', ai_reply) if p.strip()]
+            if not parts: parts = [ai_reply]
+
+            start_summary = False
+            to_summarize = []
+            with file_lock:
+                safe_chat = safe_json_read(history_file, [])
+                for t in texts:
+                    safe_chat.append({"role": "user", "content": t, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+                for p in parts:
+                    safe_chat.append({"role": "agent", "content": _strip_think(p), "time": time.strftime("%Y-%m-%d %H:%M:%S")})
+                if len(safe_chat) >= 22:
+                    to_summarize = safe_chat[:20]
+                    safe_chat = safe_chat[20:]
+                    start_summary = True
+                atomic_json_write(history_file, safe_chat)
+
+            update_interaction_time(cfg)
+
+            if start_summary:
+                threading.Thread(target=auto_summarize_memory, args=(cfg, to_summarize)).start()
+
+            # 微信分条发送，匹配平台气泡
+            for i, p in enumerate(parts):
+                if p.strip():
+                    wechat_agent.send_message(from_user, p.strip(), account, context_token)
+                    if i < len(parts) - 1:
+                        time.sleep(0.4)
+            print(f"[{time.strftime('%H:%M:%S')}] 💬 [微信批量] 回复 {len(parts)} 条")
+        except Exception as e:
+            print(f"[{time.strftime('%H:%M:%S')}] ⚠️ [微信批量] 异常: {str(e)[:150]}")
+
+    threading.Thread(target=_process_and_reply, daemon=True).start()
+
+
 def handle_wechat_message(msg, account):
     try:
         item_list = msg.get("msg", {}).get("item_list", msg.get("item_list", []))
         user_text = ""
         for item in item_list:
-            if item.get("type") == 1:
+            if str(item.get("type", "")) in ("1", 1):
                 ti = item.get("text_item", {})
                 user_text += ti.get("text", ti.get("content", ""))
         if not user_text.strip():
@@ -506,52 +573,26 @@ def handle_wechat_message(msg, account):
         context_token = msg.get("msg", {}).get("context_token", msg.get("context_token", ""))
         print(f"[{time.strftime('%H:%M:%S')}] 📥 [微信] {from_user[:20]}...: {user_text[:50]}")
 
-        def _process_and_reply():
-            try:
-                cfg = safe_json_read(os.path.join(CONFIG_DIR, "config.json"), {})
-                system_prompt, chat_history, history_file = build_chat_context(cfg)
-                llm_messages = build_llm_messages(system_prompt, chat_history, user_text)
+        cfg = safe_json_read(os.path.join(CONFIG_DIR, "config.json"), {})
+        delay = max(0, min(60, int(cfg.get('batch_delay', 5))))
 
-                ai_reply = call_llm_with_circuit_breaker(cfg, llm_messages, use_fallback=True)
-                if not ai_reply or ai_reply.strip() == _MODEL_ERR:
-                    with file_lock:
-                        safe_chat = safe_json_read(history_file, [])
-                        safe_chat.append({"role": "user", "content": user_text, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
-                        atomic_json_write(history_file, safe_chat)
-                    update_interaction_time(cfg)
-                    wechat_agent.send_message(from_user, "（脑子卡了一下，刚才没听清，你再说一遍？）", account, context_token)
-                    print(f"[{time.strftime('%H:%M:%S')}] ⚠️ [微信] 模型不可用，已发送降级回复")
-                    return
+        with _pending_lock:
+            if from_user not in _pending_msgs:
+                _pending_msgs[from_user] = {'msgs': [], 'account': account, 'context_token': context_token, 'timer': None}
+            entry = _pending_msgs[from_user]
+            entry['msgs'].append(user_text)
+            entry['context_token'] = context_token  # 用最新消息的 token
 
-                parts = [p.strip() for p in re.split(r'(?<=[。！？!?\n])', ai_reply) if p.strip()]
-                if not parts: parts = [ai_reply]
-                clean_reply = ''.join(parts)
+            if entry['timer']:
+                entry['timer'].cancel()
 
-                start_summary = False
-                to_summarize = []
-                with file_lock:
-                    safe_chat = safe_json_read(history_file, [])
-                    safe_chat.append({"role": "user", "content": user_text, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
-                    for p in parts:
-                        safe_chat.append({"role": "agent", "content": _strip_think(p), "time": time.strftime("%Y-%m-%d %H:%M:%S")})
-                    if len(safe_chat) >= 22:
-                        to_summarize = safe_chat[:20]
-                        safe_chat = safe_chat[20:]
-                        start_summary = True
-                    atomic_json_write(history_file, safe_chat)
+            if delay == 0:
+                _flush_wechat_batch(from_user)
+            else:
+                entry['timer'] = threading.Timer(delay, _flush_wechat_batch, args=[from_user])
+                entry['timer'].start()
+                print(f"[{time.strftime('%H:%M:%S')}] ⏳ [微信] 已入队，{delay}秒后批量处理（当前队列 {len(entry['msgs'])} 条）")
 
-                update_interaction_time(cfg)
-
-                if start_summary:
-                    threading.Thread(target=auto_summarize_memory, args=(cfg, to_summarize)).start()
-
-                if clean_reply.strip():
-                    wechat_agent.send_message(from_user, clean_reply, account, context_token)
-                print(f"[{time.strftime('%H:%M:%S')}] 💬 [微信] 回复: {clean_reply[:40]}")
-            except Exception as e:
-                print(f"[{time.strftime('%H:%M:%S')}] ⚠️ [微信处理] 异常: {str(e)[:150]}")
-
-        threading.Thread(target=_process_and_reply, daemon=True).start()
     except Exception as e:
         print(f"[{time.strftime('%H:%M:%S')}] ⚠️ [微信] 异常: {str(e)[:150]}")
 class AgentHandler(http.server.BaseHTTPRequestHandler):

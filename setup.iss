@@ -4,7 +4,7 @@
 ; ============================================================
 
 #define AppName "LangAgent"
-#define AppVersion "1.1.0"
+#define AppVersion "1.1.1"
 #define AppPublisher "LangAgent"
 #define AppExeName "LangAgent.exe"
 
@@ -21,7 +21,7 @@ AllowNoIcons=yes
 OutputDir=installer
 OutputBaseFilename=LangAgent_Setup_v{#AppVersion}
 Compression=lzma
-SolidCompression=yes
+SolidCompression=no
 WizardStyle=modern
 SetupIconFile=app_icon.ico
 UninstallDisplayIcon={app}\{#AppExeName}

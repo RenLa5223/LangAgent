@@ -456,6 +456,15 @@
                         </div>
                         <div style="height: 1px; background: rgba(232,213,196,0.5); margin: 15px 0;"></div>
                         <div class="input-group">
+                            <label style="font-size: 1rem; color: var(--primary-dark); font-weight: bold; margin-bottom: 4px;">微信消息批量等待（秒）</label>
+                            <span style="font-size: 0.78rem; color: var(--text-sub);">收到消息后等待指定时间再处理，连续消息合并上下文。喜欢连续发多条的用户建议调高。0=即时处理。</span>
+                            <div style="display: flex; align-items: center; gap: 10px; margin-top: 8px;">
+                                <input type="range" id="set-batch-delay" class="range-slider" min="0" max="60" value="5" step="1" oninput="document.getElementById('batch-delay-val').innerText=this.value+'秒';setDirty()" style="flex:1;">
+                                <span id="batch-delay-val" style="font-weight:bold;min-width:40px;text-align:center;">5秒</span>
+                            </div>
+                        </div>
+                        <div style="height: 1px; background: rgba(232,213,196,0.5); margin: 15px 0;"></div>
+                        <div class="input-group">
                             <label style="display: flex; align-items: center; gap: 10px; font-size: 1.1rem; color: var(--primary-dark);">
                                 <input type="checkbox" id="set-stream-enable" onchange="setDirty()" style="width: 18px; height: 18px;">
                                 开启流式输出 (打字机效果)
@@ -722,7 +731,7 @@
         async function finishWizard() {
             const ai_name = document.getElementById('setup-ai-name').value.trim() || "小白";
             const user_name = document.getElementById('setup-user-name').value.trim() || "小黑";
-            const cfg = { url: "http://localhost:11434/v1/chat/completions", key: "", model: "", ai_name, user_name, proactive_enabled: false, proactive_start: "00:00", proactive_end: "23:59", proactive_min: 120, proactive_max: 240, stream_enabled: false };
+            const cfg = { url: "http://localhost:11434/v1/chat/completions", key: "", model: "", ai_name, user_name, proactive_enabled: false, proactive_start: "00:00", proactive_end: "23:59", proactive_min: 120, proactive_max: 240, stream_enabled: false, batch_delay: 5 };
             
             try {
                 let res = await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: '模型配置', filename: 'config.json', content: JSON.stringify(cfg) }) });
@@ -1352,6 +1361,8 @@
                     document.getElementById('set-proactive-max').value = cfg.proactive_max || 240;
                     onProactiveSliderChange();
                     toggleProactive(false);
+                    document.getElementById('set-batch-delay').value = cfg.batch_delay || 5;
+                    document.getElementById('batch-delay-val').innerText = (cfg.batch_delay || 5) + '秒';
                     document.getElementById('set-stream-enable').checked = cfg.stream_enabled || false;
                     // 关闭行为
                     const closeVal = cfg.close_behavior || 'minimize';
@@ -1453,6 +1464,7 @@
                 cfg.proactive_end = getProactiveTime('end');
                 cfg.proactive_min = parseInt(document.getElementById('set-proactive-min').value) || 120;
                 cfg.proactive_max = parseInt(document.getElementById('set-proactive-max').value) || 240;
+                cfg.batch_delay = parseInt(document.getElementById('set-batch-delay').value) || 5;
                 cfg.stream_enabled = document.getElementById('set-stream-enable').checked;
                 const closeRadio = document.querySelector('input[name="close-behavior"]:checked');
                 if (closeRadio) { cfg.close_behavior = closeRadio.value; syncCloseBehavior(closeRadio.value); }
