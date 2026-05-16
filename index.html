@@ -463,14 +463,8 @@
                                 <span id="batch-delay-val" style="font-weight:bold;min-width:40px;text-align:center;">5秒</span>
                             </div>
                         </div>
-                        <div style="height: 1px; background: rgba(232,213,196,0.5); margin: 15px 0;"></div>
-                        <div class="input-group">
-                            <label style="display: flex; align-items: center; gap: 10px; font-size: 1.1rem; color: var(--primary-dark);">
-                                <input type="checkbox" id="set-stream-enable" onchange="setDirty()" style="width: 18px; height: 18px;">
-                                开启流式输出 (打字机效果)
-                            </label>
-                            <span style="font-size: 0.78rem; color: var(--text-sub); margin-left: 28px;">⚠️ 流式输出会增加模型压力，建议仅云端模型开启</span>
-                        </div>
+
+
 
                         <div style="height: 1px; background: rgba(232,213,196,0.5); margin: 15px 0;"></div>
                         <div class="input-group" style="text-align:center;">
@@ -521,9 +515,6 @@
                         </div>
                         <!-- 已绑定 -->
                         <div id="wechat-bound" style="display:none; flex-direction: column; gap: 15px;">
-                            <div id="wechat-stream-warn" style="display:none;background:#fff3cd;padding:10px 15px;border-radius:10px;font-size:0.85rem;color:#856404;border-left:4px solid #ffc107;">
-                                ⚠️ 流式输出仅对网页端聊天生效，微信消息使用标准回复模式
-                            </div>
                             <div style="background:#fff;padding:20px;border-radius:15px;box-shadow:var(--shadow-soft);">
                                 <p style="font-size:1.1rem;color:#52b788;margin-bottom:10px;"><strong>✅ 已绑定微信</strong></p>
                                 <div style="font-size:0.9rem;color:var(--text-sub);line-height:1.8;">
@@ -603,12 +594,6 @@
             document.getElementById('set-proactive-max').disabled = !isChecked;
         }
 
-        function onTimeoutSliderChange() {
-            const v = document.getElementById('set-model-timeout').value;
-            document.getElementById('timeout-display').innerText = v + '分钟';
-            setDirty();
-        }
-
         function onProactiveSliderChange() {
             const minSlider = document.getElementById('set-proactive-min');
             const maxSlider = document.getElementById('set-proactive-max');
@@ -648,7 +633,6 @@
                     const cfg = await res.json();
                     pendingTheme = cfg.theme || 'default';
                     applyTheme(pendingTheme);
-                    document.getElementById('set-stream-enable').checked = cfg.stream_enabled || false;
                 }
             } catch(e) {}
         }
@@ -731,7 +715,7 @@
         async function finishWizard() {
             const ai_name = document.getElementById('setup-ai-name').value.trim() || "小白";
             const user_name = document.getElementById('setup-user-name').value.trim() || "小黑";
-            const cfg = { url: "http://localhost:11434/v1/chat/completions", key: "", model: "", ai_name, user_name, proactive_enabled: false, proactive_start: "00:00", proactive_end: "23:59", proactive_min: 120, proactive_max: 240, stream_enabled: false, batch_delay: 5 };
+            const cfg = { url: "http://localhost:11434/v1/chat/completions", key: "", model: "", ai_name, user_name, proactive_enabled: false, proactive_start: "00:00", proactive_end: "23:59", proactive_min: 120, proactive_max: 240, batch_delay: 5 };
             
             try {
                 let res = await fetch('/api/save', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ folder: '模型配置', filename: 'config.json', content: JSON.stringify(cfg) }) });
@@ -778,6 +762,7 @@
             'online':     {cls:'head-conn-dot green', color:'#52b788', text:'在线'},
             'offline':    {cls:'head-conn-dot red', color:'#e07a5f', text:'离线'},
         };
+        let _lastConnStatus = 'connecting';
         async function _refreshConnStatus() {
             try {
                 const r = await fetch('/api/status');
@@ -787,6 +772,10 @@
                     document.getElementById('head-conn-dot').className = s.cls;
                     document.getElementById('head-conn-text').innerText = s.text;
                     document.getElementById('head-conn-text').style.color = s.color;
+                    if (d.status === 'online' && _lastConnStatus !== 'online') {
+                        fetchSignature();
+                    }
+                    _lastConnStatus = d.status;
                 }
             } catch(e) {}
         }
@@ -1153,37 +1142,14 @@
 
         async function renderReplyParts(parts) {
             const indicator = document.getElementById('header-typing-indicator');
-            for (let part of parts) {
-                indicator.style.display = 'inline-block';
-                let delay = (part.length * 100) + Math.random() * 1000 + 500;
-                await new Promise(r => setTimeout(r, delay));
+            for (let i = 0; i < parts.length; i++) {
+                if (i > 0) {
+                    indicator.style.display = 'inline-block';
+                    await new Promise(r => setTimeout(r, 600 + Math.random() * 500));
+                }
                 indicator.style.display = 'none';
-                appendMessageDOM('agent', part, new Date().toLocaleTimeString());
-                await new Promise(r => setTimeout(r, 500));
-            }
-            isTyping = false;
-        }
-
-        async function typeBubble(text) {
-            const timeStr = new Date().toLocaleTimeString();
-            const chatBox = document.getElementById('chat-box');
-            const msgRow = document.createElement('div'); msgRow.className = 'msg-row agent';
-            const avatar = document.createElement('div'); avatar.className = 'avatar';
-            const avatarImg = document.createElement('img');
-            avatarImg.dataset.role = 'agent';
-            avatarImg.src = '/api/avatar/agent?v=' + avatarCacheBuster;
-            avatarImg.onerror = () => { avatar.innerHTML = GLOBAL_AI_NAME[0]; avatar.style.color = 'var(--primary-color)'; };
-            avatar.appendChild(avatarImg);
-            const bubble = document.createElement('div'); bubble.className = 'bubble';
-            const timeSpan = document.createElement('div'); timeSpan.className = 'msg-time'; timeSpan.innerText = timeStr;
-            bubble.appendChild(timeSpan);
-            const textSpan = document.createElement('span'); bubble.appendChild(textSpan);
-            msgRow.appendChild(avatar); msgRow.appendChild(bubble);
-            chatBox.appendChild(msgRow);
-            for (let i = 0; i < text.length; i++) {
-                textSpan.innerText += text[i];
-                chatBox.scrollTop = chatBox.scrollHeight;
-                await new Promise(r => setTimeout(r, 25 + Math.random() * 15));
+                appendMessageDOM('agent', parts[i], new Date().toLocaleTimeString());
+                await new Promise(r => setTimeout(r, 300));
             }
         }
 
@@ -1194,60 +1160,30 @@
             localMsgCount += 1;
             const timeStr = new Date().toLocaleTimeString();
             appendMessageDOM('user', text, timeStr, currentImageBase64);
-            const streamOn = document.getElementById('set-stream-enable').checked;
-            const payload = { message: text, image: currentImageBase64, stream: streamOn };
+            const payload = { message: text, image: currentImageBase64 };
             inputEl.value = ''; inputEl.style.height = '24px'; removeImage();
+
+            const indicator = document.getElementById('header-typing-indicator');
+            indicator.style.display = 'inline-block';
+
             try {
                 const response = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-                if (streamOn && response.ok && response.headers.get('Content-Type')?.includes('text/event-stream')) {
-                    const indicator = document.getElementById('header-typing-indicator');
-                    indicator.style.display = 'inline-block';
-                    const reader = response.body.getReader();
-                    const decoder = new TextDecoder();
-                    let buf = '', firstSentence = true;
-                    while (true) {
-                        const {done, value} = await reader.read();
-                        if (done) break;
-                        buf += decoder.decode(value, {stream: true});
-                        const lines = buf.split('\n'); buf = lines.pop();
-                        for (const line of lines) {
-                            if (line.startsWith('data: ')) {
-                                try {
-                                    const d = JSON.parse(line.slice(6));
-                                    if (d.type === 'sentence') {
-                                        if (firstSentence) { indicator.style.display = 'none'; firstSentence = false; }
-                                        localMsgCount += 1; await typeBubble(d.text);
-                                    }
-                                    else if (d.type === 'error') {
-                                        indicator.style.display = 'none';
-                                        removeLastUserBubble();
-                                        localMsgCount -= 1;
-                                        showToast(d.message || '发送失败');
-                                        isTyping = false;
-                                        return;
-                                    }
-                                    else if (d.type === 'done') { indicator.style.display = 'none'; isTyping = false; }
-                                } catch(e) {}
-                            }
-                        }
-                    }
+                const data = await response.json();
+                if (response.ok) {
+                    let parts = data.reply_parts || [];
+                    localMsgCount += parts.length;
+                    await renderReplyParts(parts);
                 } else {
-                    const data = await response.json();
-                    if (response.ok) {
-                        let parts = data.reply_parts || [];
-                        localMsgCount += parts.length;
-                        await renderReplyParts(parts);
-                    } else {
-                        removeLastUserBubble();
-                        localMsgCount -= 1;
-                        showToast(data.message || data.error || '请求失败，请检查模型配置');
-                    }
+                    removeLastUserBubble();
+                    localMsgCount -= 1;
+                    showToast(data.message || data.error || '请求失败，请检查模型配置');
                 }
             } catch (error) {
                 removeLastUserBubble();
                 localMsgCount -= 1;
                 showToast('网络错误，管家未响应');
             } finally {
+                indicator.style.display = 'none';
                 isTyping = false;
             }
         }
@@ -1363,7 +1299,6 @@
                     toggleProactive(false);
                     document.getElementById('set-batch-delay').value = cfg.batch_delay || 5;
                     document.getElementById('batch-delay-val').innerText = (cfg.batch_delay || 5) + '秒';
-                    document.getElementById('set-stream-enable').checked = cfg.stream_enabled || false;
                     // 关闭行为
                     const closeVal = cfg.close_behavior || 'minimize';
                     syncCloseBehavior(closeVal);
@@ -1465,7 +1400,6 @@
                 cfg.proactive_min = parseInt(document.getElementById('set-proactive-min').value) || 120;
                 cfg.proactive_max = parseInt(document.getElementById('set-proactive-max').value) || 240;
                 cfg.batch_delay = parseInt(document.getElementById('set-batch-delay').value) || 5;
-                cfg.stream_enabled = document.getElementById('set-stream-enable').checked;
                 const closeRadio = document.querySelector('input[name="close-behavior"]:checked');
                 if (closeRadio) { cfg.close_behavior = closeRadio.value; syncCloseBehavior(closeRadio.value); }
                 cfg.theme = pendingTheme;
@@ -1533,8 +1467,6 @@
                 wechatHideAll();
                 if (st.bound) {
                     document.getElementById('wechat-bound').style.display = 'flex';
-                    const streamWarn = document.getElementById('wechat-stream-warn');
-                    streamWarn.style.display = document.getElementById('set-stream-enable').checked ? 'block' : 'none';
                     document.getElementById('wechat-acct-id').innerText = st.account.account_id || '-';
                     document.getElementById('wechat-user-id').innerText = st.account.user_id || '-';
                     document.getElementById('wechat-base-url').innerText = st.account.base_url || '-';

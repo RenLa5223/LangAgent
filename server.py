@@ -57,7 +57,7 @@ def _app_path(rel_path):
     return bundled
 
 PORT = 5622
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.1.2"
 # 打包后 Program Files 无写权限，数据存用户目录
 if getattr(sys, 'frozen', False):
     DATA_DIR = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'LangAgent')
@@ -80,7 +80,8 @@ for d in [MEM_DIR, CONFIG_DIR, AGENT_AVATAR_DIR, USER_AVATAR_DIR, AGENT_PROFILE_
     os.makedirs(d, exist_ok=True)
 
 file_lock = threading.RLock()
-global_state_lock = threading.Lock() 
+global_state_lock = threading.Lock()
+last_wechat_user_id = "" 
 
 api_cooldown_until = 0
 consecutive_failures = 0
@@ -155,16 +156,26 @@ def _strip_think(text):
     """去除 <｜end▁of▁thinking｜><｜end▁of▁thinking｜><｜end▁of▁thinking｜> 思考内容，返回纯正文。聊天记录只存正文。"""
     return re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
 
-def _split_think(text):
-    """分离思考内容和正文，返回 (think_parts, main_text)。"""
-    thinks = []
-    main = text
-    for m in re.finditer(r'<think>(.*?)</think>', text, re.DOTALL):
-        thinks.append(m.group(1).strip())
-    main = _strip_think(text)
-    return thinks, main
-
 _conn_status = "connecting"
+
+def get_or_generate_signature(cfg):
+    """获取今天的签名，没有则调用模型生成。"""
+    try:
+        sig_file = os.path.join(MEM_DIR, "daily_signature.json")
+        today_str = time.strftime("%Y-%m-%d")
+        with file_lock:
+            sig_data = safe_json_read(sig_file, {})
+        if sig_data.get("date") == today_str and sig_data.get("signature"):
+            return sig_data["signature"]
+        sys_prompt = f"你是{cfg.get('ai_name', 'AI')}。请写一句【15字以内】的【社交软件个性签名】。要求：口语化、第一人称、展现你今天的心情或状态。直接返回签名文本，不要任何解释。"
+        ai_reply = call_llm_with_circuit_breaker(cfg, [{"role": "user", "content": sys_prompt}], use_fallback=False)
+        if ai_reply:
+            new_sig = ai_reply.strip(' "”\'\"\n')
+            atomic_json_write(sig_file, {"date": today_str, "signature": new_sig})
+            return new_sig
+        return sig_data.get("signature", "")
+    except Exception:
+        return ""
 
 def build_chat_context(cfg):
     """构建聊天上下文（人设 + 档案 + 记忆 + 历史），返回 (system_prompt, history, history_file)。"""
@@ -274,53 +285,6 @@ def call_llm_with_circuit_breaker(cfg, messages, use_fallback=True):
     _set_conn_status("offline")
     return _MODEL_ERR if use_fallback else None
 
-def call_llm_stream(cfg, messages):
-    """流式调用 LLM，逐 token yield 文本增量。连接失败时 yield None。"""
-    global api_cooldown_until, consecutive_failures
-
-    with global_state_lock: cooldown_time = api_cooldown_until
-    if time.time() < cooldown_time:
-        yield None; return
-
-    timeout = int(cfg.get('model_timeout', 120))
-    payload = {"model": cfg['model'], "messages": messages, "stream": True}
-    req = urllib.request.Request(cfg['url'], data=json.dumps(payload).encode('utf-8'), method='POST')
-    req.add_header('Content-Type', 'application/json')
-    if cfg['key'].strip(): req.add_header('Authorization', f"Bearer {cfg['key']}")
-
-    try:
-        resp = urllib.request.urlopen(req, timeout=timeout)
-        in_think = False
-        for raw_line in resp:
-            line = raw_line.decode('utf-8', errors='replace').strip()
-            if not line.startswith('data: '): continue
-            data = line[6:]
-            if data == '[DONE]': break
-            try:
-                chunk = json.loads(data)
-                delta = chunk.get('choices', [{}])[0].get('delta', {}).get('content') or ''
-                if not delta: continue
-                remaining = delta
-                while remaining:
-                    if not in_think:
-                        idx = remaining.find('<think>')
-                        if idx == -1: yield remaining; break
-                        if idx > 0: yield remaining[:idx]
-                        remaining = remaining[idx + 7:]; in_think = True
-                    else:
-                        idx = remaining.find('</think>')
-                        if idx == -1: break
-                        remaining = remaining[idx + 8:]; in_think = False
-            except: pass
-        with global_state_lock: consecutive_failures = 0
-        _set_conn_status("online")
-    except Exception:
-        with global_state_lock:
-            consecutive_failures += 1
-            if consecutive_failures >= 3:
-                api_cooldown_until = time.time() + 60
-        _set_conn_status("offline")
-        yield None
 
 def auto_summarize_memory(cfg, recent_history):
     try:
@@ -457,10 +421,9 @@ def proactive_worker():
                     # 微信在线则同步推送
                     if WECHAT_AVAILABLE and wechat_agent.get_state()["running"]:
                         try:
-                            acct = wechat_agent.get_account()
-                            to_user = acct.get("user_id", "")
-                            if to_user:
-                                wechat_agent.send_message(to_user, ''.join(parts))
+                            global last_wechat_user_id
+                            if last_wechat_user_id:
+                                wechat_agent.send_message(last_wechat_user_id, ''.join(parts))
                                 print(f"[{time.strftime('%H:%M:%S')}] 💌 [主动关怀] 已同步推送至微信")
                         except Exception:
                             pass
@@ -518,6 +481,7 @@ def _flush_wechat_batch(from_user):
                         safe_chat.append({"role": "user", "content": t, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
                     atomic_json_write(history_file, safe_chat)
                 update_interaction_time(cfg)
+                threading.Thread(target=get_or_generate_signature, args=(cfg,), daemon=True).start()
                 wechat_agent.send_message(from_user, "（脑子卡了一下，刚才没听清，你再说一遍？）", account, context_token)
                 print(f"[{time.strftime('%H:%M:%S')}] ⚠️ [微信批量] 模型不可用，已发送降级回复")
                 return
@@ -540,6 +504,7 @@ def _flush_wechat_batch(from_user):
                 atomic_json_write(history_file, safe_chat)
 
             update_interaction_time(cfg)
+            threading.Thread(target=get_or_generate_signature, args=(cfg,), daemon=True).start()
 
             if start_summary:
                 threading.Thread(target=auto_summarize_memory, args=(cfg, to_summarize)).start()
@@ -570,6 +535,8 @@ def handle_wechat_message(msg, account):
         from_user = msg.get("msg", {}).get("from_user_id", msg.get("from_user_id", ""))
         if not from_user:
             return
+        global last_wechat_user_id
+        last_wechat_user_id = from_user
         context_token = msg.get("msg", {}).get("context_token", msg.get("context_token", ""))
         print(f"[{time.strftime('%H:%M:%S')}] 📥 [微信] {from_user[:20]}...: {user_text[:50]}")
 
@@ -606,7 +573,7 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
 
     def get_config(self):
         config_path = os.path.join(CONFIG_DIR, "config.json")
-        cfg = {"url": "http://localhost:11434/v1/chat/completions", "key": "", "model": "", "hide_think": True, "ai_name": "", "user_name": "", "stream_enabled": False}
+        cfg = {"url": "http://localhost:11434/v1/chat/completions", "key": "", "model": "", "hide_think": True, "ai_name": "", "user_name": ""}
         cfg.update(safe_json_read(config_path, {}))
         return cfg
 
@@ -668,36 +635,11 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
 
         elif self.path == "/api/signature":
             try:
-                if get_conn_status() != "online":
-                    self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
-                    self.wfile.write(json.dumps({"signature": ""}).encode('utf-8'))
-                    return
                 cfg = self.get_config()
                 if not cfg.get("ai_name"): self.send_response(400); self.end_headers(); return
-
-                sig_file = os.path.join(MEM_DIR, "daily_signature.json")
-                today_str = time.strftime("%Y-%m-%d")
-
-                with file_lock: sig_data = safe_json_read(sig_file, {})
-                        
-                if sig_data.get("date") == today_str and sig_data.get("signature"):
-                    self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
-                    self.wfile.write(json.dumps({"signature": sig_data["signature"]}).encode('utf-8'))
-                    return
-
-                sys_prompt = f"你是{cfg['ai_name']}。请写一句【15字以内】的【社交软件个性签名】。要求：口语化、第一人称、展现你今天的心情或状态。直接返回签名文本，不要任何解释。"
-                ai_reply = call_llm_with_circuit_breaker(cfg, [{"role": "user", "content": sys_prompt}], use_fallback=False)
-
-                if ai_reply:
-                    ai_reply = ai_reply.strip(' "”\'“\n')
-                    atomic_json_write(sig_file, {"date": today_str, "signature": ai_reply})
-                    self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
-                    self.wfile.write(json.dumps({"signature": ai_reply}).encode('utf-8'))
-                else:
-                    # LLM 不可用，复用旧签名（如有）
-                    old = sig_data.get("signature", "")
-                    self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
-                    self.wfile.write(json.dumps({"signature": old}).encode('utf-8'))
+                sig = get_or_generate_signature(cfg)
+                self.send_response(200); self.send_header('Content-type', 'application/json'); self.end_headers()
+                self.wfile.write(json.dumps({"signature": sig}).encode('utf-8'))
             except Exception:
                 self.send_response(500); self.end_headers()
 
@@ -921,6 +863,7 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
             try:
                 cfg = self.get_config()
                 update_interaction_time(cfg)
+                threading.Thread(target=get_or_generate_signature, args=(cfg,), daemon=True).start()
 
                 post_data = json.loads(self.rfile.read(content_length).decode('utf-8'))
                 user_message = post_data.get('message')
@@ -929,72 +872,6 @@ class AgentHandler(http.server.BaseHTTPRequestHandler):
                 system_prompt, chat_history, history_file = build_chat_context(cfg)
                 msg_content = [{"type": "text", "text": user_message or "看看这张图片"}, {"type": "image_url", "image_url": {"url": image_data}}] if image_data else user_message
                 llm_messages = build_llm_messages(system_prompt, chat_history, msg_content)
-
-                stream_mode = post_data.get('stream') and cfg.get('stream_enabled', False)
-
-                if stream_mode:
-                    self.send_response(200)
-                    self.send_header('Content-type', 'text/event-stream; charset=utf-8')
-                    self.send_header('Cache-Control', 'no-cache')
-                    self.send_header('Access-Control-Allow-Origin', '*')
-                    self.end_headers()
-
-                    parts = []
-                    buf = ""
-                    try:
-                        for token in call_llm_stream(cfg, llm_messages):
-                            if token is None: break
-                            buf += token
-                            while True:
-                                m = re.search(r'[。！？!?\n]', buf)
-                                if not m: break
-                                end = m.end()
-                                sentence = buf[:end].strip()
-                                buf = buf[end:]
-                                if sentence:
-                                    parts.append(sentence)
-                                    self.wfile.write(f"data: {json.dumps({'type': 'sentence', 'text': sentence}, ensure_ascii=False)}\n\n".encode())
-                                    self.wfile.flush()
-                        if buf.strip():
-                            parts.append(buf.strip())
-                            self.wfile.write(f"data: {json.dumps({'type': 'sentence', 'text': buf.strip()}, ensure_ascii=False)}\n\n".encode())
-                            buf = ""
-                    except Exception:
-                        pass
-
-                    rejected = False
-                    if buf.strip():
-                        parts.append(buf.strip())
-                        self.wfile.write(f"data: {json.dumps({'type': 'sentence', 'text': buf.strip()}, ensure_ascii=False)}\n\n".encode())
-                    if not parts:
-                        self.wfile.write(f"data: {json.dumps({'type': 'error', 'message': '请求失败，请检查模型配置是否正确'}, ensure_ascii=False)}\n\n".encode())
-                        self.wfile.write(b"data: {\"type\":\"done\"}\n\n")
-                        self.wfile.flush()
-                        return
-                    full_text = ''.join(parts)
-                    if _is_rejected(full_text):
-                        self.wfile.write(f"data: {json.dumps({'type': 'error', 'message': '请求失败，请检查模型配置是否正确'}, ensure_ascii=False)}\n\n".encode())
-                        rejected = True
-                    self.wfile.write(b"data: {\"type\":\"done\"}\n\n")
-                    self.wfile.flush()
-
-                    if rejected:
-                        return
-
-                    with file_lock:
-                        safe_chat_history = safe_json_read(history_file, [])
-                        safe_chat_history.append({"role": "user", "content": user_message or "[发送了一张图片]", "time": time.strftime("%Y-%m-%d %H:%M:%S")})
-                        for p in parts:
-                            safe_chat_history.append({"role": "agent", "content": p, "time": time.strftime("%Y-%m-%d %H:%M:%S")})
-                        if len(safe_chat_history) >= 22:
-                            to_summarize = safe_chat_history[:20]
-                            safe_chat_history = safe_chat_history[20:]
-                            atomic_json_write(history_file, safe_chat_history)
-                            threading.Thread(target=auto_summarize_memory, args=(cfg, to_summarize)).start()
-                        else:
-                            atomic_json_write(history_file, safe_chat_history)
-                    update_interaction_time(cfg)
-                    return
 
                 ai_reply = call_llm_with_circuit_breaker(cfg, llm_messages, use_fallback=True)
 
